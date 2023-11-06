@@ -4,13 +4,19 @@ use std::num::{NonZeroU16, NonZeroU32};
 const DEFAULT_GBITS: u32 = 10;
 
 const fn max_index<const GBITS: u32>() -> u32 {
-    assert!(GBITS <= 15);
     u32::MAX >> GBITS
 }
 
 const fn max_generation<const GBITS: u32>() -> i16 {
-    assert!(GBITS <= 15);
     i16::MAX >> (15 - GBITS)
+}
+
+fn assert_gbits<const GBITS: u32>() {
+    // GBITS must be non-zero to keep the generation compatible with NonZeroU16 and the Entity
+    // representation compatible with NonZeroU32. GBITS must be less than 16 so that the slots list
+    // has a sign bit.
+    assert!(GBITS > 0);
+    assert!(GBITS < 16);
 }
 
 #[repr(transparent)]
@@ -31,7 +37,7 @@ impl<const GBITS: u32> Entity<GBITS> {
     }
 
     pub fn generation(&self) -> NonZeroU16 {
-        assert!(GBITS <= 15);
+        assert_gbits::<GBITS>();
         let mask = u16::MAX >> (16 - GBITS);
         let generation = self.0.get() as u16 & mask;
         debug_assert!(generation > 0);
@@ -42,7 +48,7 @@ impl<const GBITS: u32> Entity<GBITS> {
     // The null entity has a generation of 0 (which is never issued to any non-null entity) and an
     // index of 1 (for compatibility with NonZeroU32).
     pub fn null() -> Self {
-        assert!(GBITS <= 15);
+        assert_gbits::<GBITS>();
         Self(unsafe { NonZeroU32::new_unchecked(1 << GBITS) })
     }
 
@@ -84,6 +90,7 @@ impl EntityAllocator<DEFAULT_GBITS> {
 
 impl<const GBITS: u32> EntityAllocator<GBITS> {
     pub fn new_custom() -> Self {
+        assert_gbits::<GBITS>();
         assert!(size_of::<usize>() >= size_of::<u32>());
         Self {
             slots: Vec::new(),
@@ -230,5 +237,121 @@ mod tests {
         allocator.free(entity);
         allocator.recycle();
         allocator.contains(entity);
+    }
+
+    fn out_of_bounds_index_test_case() {
+        let allocator1 = EntityAllocator::new();
+        let mut allocator2 = EntityAllocator::new();
+        let entity = allocator2.allocate();
+        assert!(!allocator1.contains(entity));
+    }
+
+    #[test]
+    #[should_panic]
+    #[cfg(debug_assertions)]
+    fn test_out_of_bounds_index() {
+        out_of_bounds_index_test_case();
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn test_out_of_bounds_index() {
+        out_of_bounds_index_test_case();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_gbits_0_panics() {
+        EntityAllocator::<0>::new_custom();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_gbits_16_panics() {
+        EntityAllocator::<16>::new_custom();
+    }
+
+    fn full_allocator() -> EntityAllocator<15> {
+        let mut allocator = EntityAllocator::<15>::new_custom();
+        let len = max_index::<15>() as usize + 1;
+        for _ in 0..len {
+            allocator.allocate();
+        }
+        allocator
+    }
+
+    #[test]
+    fn test_fill_slots() {
+        full_allocator();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_overfill_slots() {
+        let mut allocator = full_allocator();
+        allocator.allocate();
+    }
+
+    #[test]
+    fn test_gbits_1() {
+        // With GBITS=1, there's only 1 possible generation (remember that generation 0 is never
+        // allocated), so every freed entity is immediately retired.
+        let mut allocator = EntityAllocator::<1>::new_custom();
+        let e0 = allocator.allocate();
+        let e1 = allocator.allocate();
+        assert_eq!(allocator.slots, [1, 1]);
+        assert_eq!(e0.index(), 0);
+        assert_eq!(e0.generation().get(), 1);
+        assert_eq!(e1.index(), 1);
+        assert_eq!(e1.generation().get(), 1);
+        allocator.free(e0);
+        assert_eq!(allocator.slots, [-1, 1]);
+        assert_eq!(allocator.free_slots, []);
+        assert_eq!(allocator.retired_slots, [0]);
+        allocator.free(e1);
+        assert_eq!(allocator.slots, [-1, -1]);
+        assert_eq!(allocator.free_slots, []);
+        assert_eq!(allocator.retired_slots, [0, 1]);
+        allocator.recycle();
+        assert_eq!(allocator.slots, [0, 0]);
+        assert_eq!(allocator.free_slots, [0, 1]);
+        assert_eq!(allocator.retired_slots, []);
+    }
+
+    #[test]
+    fn test_gbits_2() {
+        // With GBITS=2, there are 3 possible generations (remember that generation 0 is never
+        // allocated). Confirm that we get a new slot on the 4th allocate/free cycle.
+        let mut allocator = EntityAllocator::<2>::new_custom();
+        let mut entity = allocator.allocate();
+        assert_eq!(allocator.slots, [1]);
+        allocator.free(entity);
+        assert_eq!(allocator.slots, [-1]);
+        assert_eq!(allocator.free_slots, [0]);
+        assert_eq!(allocator.retired_slots, []);
+        entity = allocator.allocate();
+        assert_eq!(allocator.slots, [2]);
+        assert_eq!(allocator.free_slots, []);
+        assert_eq!(allocator.retired_slots, []);
+        allocator.free(entity);
+        assert_eq!(allocator.slots, [-2]);
+        assert_eq!(allocator.free_slots, [0]);
+        assert_eq!(allocator.retired_slots, []);
+        entity = allocator.allocate();
+        assert_eq!(allocator.slots, [3]);
+        assert_eq!(allocator.free_slots, []);
+        assert_eq!(allocator.retired_slots, []);
+        allocator.free(entity);
+        assert_eq!(allocator.slots, [-3]);
+        assert_eq!(allocator.free_slots, []);
+        assert_eq!(allocator.retired_slots, [0]);
+        entity = allocator.allocate();
+        assert_eq!(allocator.slots, [-3, 1]);
+        assert_eq!(allocator.free_slots, []);
+        assert_eq!(allocator.retired_slots, [0]);
+        allocator.free(entity);
+        assert_eq!(allocator.slots, [-3, -1]);
+        assert_eq!(allocator.free_slots, [1]);
+        assert_eq!(allocator.retired_slots, [0]);
     }
 }
