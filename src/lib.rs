@@ -21,9 +21,9 @@ fn assert_gbits<const GBITS: u32>() {
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Entity<const GBITS: u32 = DEFAULT_GBITS>(NonZeroU32);
+pub struct Id<const GBITS: u32 = DEFAULT_GBITS>(NonZeroU32);
 
-impl<const GBITS: u32> Entity<GBITS> {
+impl<const GBITS: u32> Id<GBITS> {
     fn new(index: u32, generation: NonZeroU16) -> Self {
         debug_assert!(index <= (u32::MAX >> GBITS));
         debug_assert!(generation.get() < (1 << GBITS));
@@ -53,19 +53,19 @@ impl<const GBITS: u32> Entity<GBITS> {
     }
 
     /// `entity.exists(&allocator)` is shorthand for `allocator.contains(entity)`.
-    pub fn exists(&self, allocator: &EntityAllocator<GBITS>) -> bool {
+    pub fn exists(&self, allocator: &Registry<GBITS>) -> bool {
         allocator.contains(*self)
     }
 
     /// `entity.is_dangling(&allocator)` is shorthand for `!allocator.contains(entity)`.
-    pub fn is_dangling(&self, allocator: &EntityAllocator<GBITS>) -> bool {
+    pub fn is_dangling(&self, allocator: &Registry<GBITS>) -> bool {
         !allocator.contains(*self)
     }
 }
 
-impl<const GBITS: u32> std::fmt::Debug for Entity<GBITS> {
+impl<const GBITS: u32> std::fmt::Debug for Id<GBITS> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        f.debug_struct("Entity")
+        f.debug_struct("Id")
             .field("index", &self.index())
             .field("generation", &self.generation())
             .finish()
@@ -73,7 +73,7 @@ impl<const GBITS: u32> std::fmt::Debug for Entity<GBITS> {
 }
 
 #[derive(Clone, Debug)]
-pub struct EntityAllocator<const GBITS: u32 = DEFAULT_GBITS> {
+pub struct Registry<const GBITS: u32 = DEFAULT_GBITS> {
     // The value in each slot is its generation. A positive generation means the slot is occupied.
     // A zero or negative generation means the slot is free or retired. (The zero generation only
     // occurs after recycling.)
@@ -82,14 +82,14 @@ pub struct EntityAllocator<const GBITS: u32 = DEFAULT_GBITS> {
     retired_slots: Vec<u32>,
 }
 
-impl EntityAllocator<DEFAULT_GBITS> {
+impl Registry<DEFAULT_GBITS> {
     pub fn new() -> Self {
-        Self::new_custom()
+        Self::with_gbits()
     }
 }
 
-impl<const GBITS: u32> EntityAllocator<GBITS> {
-    pub fn new_custom() -> Self {
+impl<const GBITS: u32> Registry<GBITS> {
+    pub fn with_gbits() -> Self {
         assert_gbits::<GBITS>();
         assert!(size_of::<usize>() >= size_of::<u32>());
         Self {
@@ -107,7 +107,7 @@ impl<const GBITS: u32> EntityAllocator<GBITS> {
         }
     }
 
-    fn debug_detect_logic_errors(&self, entity: Entity<GBITS>) {
+    fn debug_detect_logic_errors(&self, entity: Id<GBITS>) {
         if let Some(slot) = self.slots.get(entity.index() as usize) {
             // The only way to have an entity with a generation larger than the absolute value of
             // the corresponding slot is to hold a dangling entity across a call to recycle(). We
@@ -125,7 +125,7 @@ impl<const GBITS: u32> EntityAllocator<GBITS> {
         }
     }
 
-    pub fn contains(&self, entity: Entity<GBITS>) -> bool {
+    pub fn contains(&self, entity: Id<GBITS>) -> bool {
         self.debug_detect_logic_errors(entity);
         if let Some(&slot) = self.slots.get(entity.index() as usize) {
             entity.generation().get() as i16 == slot
@@ -134,7 +134,7 @@ impl<const GBITS: u32> EntityAllocator<GBITS> {
         }
     }
 
-    pub fn try_allocate(&mut self) -> Option<Entity<GBITS>> {
+    pub fn try_allocate(&mut self) -> Option<Id<GBITS>> {
         if let Some(index) = self.free_slots.pop() {
             // Reuse a free slot.
             let slot = &mut self.slots[index as usize];
@@ -145,7 +145,7 @@ impl<const GBITS: u32> EntityAllocator<GBITS> {
             let new_generation = -(*slot) + 1;
             debug_assert!(new_generation <= max_generation::<GBITS>());
             *slot = new_generation;
-            return Some(Entity::<GBITS>::new(index, unsafe {
+            return Some(Id::<GBITS>::new(index, unsafe {
                 NonZeroU16::new_unchecked(new_generation as u16)
             }));
         }
@@ -158,14 +158,14 @@ impl<const GBITS: u32> EntityAllocator<GBITS> {
         let new_index = self.slots.len() as u32;
         let new_generation = NonZeroU16::new(1).unwrap();
         self.slots.push(new_generation.get() as i16);
-        Some(Entity::<GBITS>::new(new_index, new_generation))
+        Some(Id::<GBITS>::new(new_index, new_generation))
     }
 
-    pub fn allocate(&mut self) -> Entity<GBITS> {
+    pub fn allocate(&mut self) -> Id<GBITS> {
         self.try_allocate().expect("all slots are occupied")
     }
 
-    pub fn free(&mut self, entity: Entity<GBITS>) {
+    pub fn free(&mut self, entity: Id<GBITS>) {
         self.debug_detect_logic_errors(entity);
         if let Some(slot) = self.slots.get_mut(entity.index() as usize) {
             if *slot == entity.generation().get() as i16 {
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_allocate_and_free() {
-        let mut allocator = EntityAllocator::new();
+        let mut allocator = Registry::new();
         let e1 = allocator.allocate();
         let e2 = allocator.allocate();
         assert!(e1.exists(&allocator));
@@ -232,7 +232,7 @@ mod tests {
     #[should_panic]
     #[cfg(debug_assertions)]
     fn test_dangling_entity_after_recycle_panics() {
-        let mut allocator = EntityAllocator::new();
+        let mut allocator = Registry::new();
         let entity = allocator.allocate();
         allocator.free(entity);
         allocator.recycle();
@@ -240,8 +240,8 @@ mod tests {
     }
 
     fn out_of_bounds_index_test_case() {
-        let allocator1 = EntityAllocator::new();
-        let mut allocator2 = EntityAllocator::new();
+        let allocator1 = Registry::new();
+        let mut allocator2 = Registry::new();
         let entity = allocator2.allocate();
         assert!(!allocator1.contains(entity));
     }
@@ -262,17 +262,17 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_gbits_0_panics() {
-        EntityAllocator::<0>::new_custom();
+        Registry::<0>::with_gbits();
     }
 
     #[test]
     #[should_panic]
     fn test_gbits_16_panics() {
-        EntityAllocator::<16>::new_custom();
+        Registry::<16>::with_gbits();
     }
 
-    fn full_allocator() -> EntityAllocator<15> {
-        let mut allocator = EntityAllocator::<15>::new_custom();
+    fn full_allocator() -> Registry<15> {
+        let mut allocator = Registry::<15>::with_gbits();
         let len = max_index::<15>() as usize + 1;
         for _ in 0..len {
             allocator.allocate();
@@ -296,7 +296,7 @@ mod tests {
     fn test_gbits_1() {
         // With GBITS=1, there's only 1 possible generation (remember that generation 0 is never
         // allocated), so every freed entity is immediately retired.
-        let mut allocator = EntityAllocator::<1>::new_custom();
+        let mut allocator = Registry::<1>::with_gbits();
         let e0 = allocator.allocate();
         let e1 = allocator.allocate();
         assert_eq!(allocator.slots, [1, 1]);
@@ -322,7 +322,7 @@ mod tests {
     fn test_gbits_2() {
         // With GBITS=2, there are 3 possible generations (remember that generation 0 is never
         // allocated). Confirm that we get a new slot on the 4th allocate/free cycle.
-        let mut allocator = EntityAllocator::<2>::new_custom();
+        let mut allocator = Registry::<2>::with_gbits();
         let mut entity = allocator.allocate();
         assert_eq!(allocator.slots, [1]);
         allocator.free(entity);
