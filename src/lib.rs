@@ -181,7 +181,29 @@ impl<T, const GBITS: u32> Registry<T, GBITS> {
         }
     }
 
-    pub fn try_allocate(&mut self, value: T) -> Option<Id<T, GBITS>> {
+    pub fn get(&self, id: Id<T, GBITS>) -> Option<&T> {
+        if let Some(&slot) = self.generations.get(id.index() as usize) {
+            if id.generation().get() as i16 == slot {
+                unsafe {
+                    return Some(self.values[id.index() as usize].assume_init_ref());
+                }
+            }
+        }
+        None
+    }
+
+    pub fn get_mut(&mut self, id: Id<T, GBITS>) -> Option<&mut T> {
+        if let Some(&slot) = self.generations.get(id.index() as usize) {
+            if id.generation().get() as i16 == slot {
+                unsafe {
+                    return Some(self.values[id.index() as usize].assume_init_mut());
+                }
+            }
+        }
+        None
+    }
+
+    pub fn try_insert(&mut self, value: T) -> Option<Id<T, GBITS>> {
         debug_assert_eq!(self.generations.len(), self.values.len());
         if let Some(index) = self.free_indexes.pop() {
             // Reuse a free slot.
@@ -212,10 +234,10 @@ impl<T, const GBITS: u32> Registry<T, GBITS> {
     }
 
     pub fn insert(&mut self, value: T) -> Id<T, GBITS> {
-        self.try_allocate(value).expect("all slots are occupied")
+        self.try_insert(value).expect("all slots are occupied")
     }
 
-    pub fn free(&mut self, id: Id<T, GBITS>) {
+    pub fn remove(&mut self, id: Id<T, GBITS>) {
         self.debug_detect_logic_errors(id);
         if let Some(slot) = self.generations.get_mut(id.index() as usize) {
             if *slot == id.generation().get() as i16 {
@@ -299,23 +321,55 @@ where
     }
 }
 
+impl<T, const GBITS: u32> std::ops::Index<Id<T, GBITS>> for Registry<T, GBITS> {
+    type Output = T;
+
+    fn index(&self, id: Id<T, GBITS>) -> &T {
+        self.get(id).unwrap()
+    }
+}
+
+impl<T, const GBITS: u32> std::ops::IndexMut<Id<T, GBITS>> for Registry<T, GBITS> {
+    fn index_mut(&mut self, id: Id<T, GBITS>) -> &mut T {
+        self.get_mut(id).unwrap()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_allocate_and_free() {
+    fn test_insert_and_remove() {
         let mut registry = Registry::new();
         let e1 = registry.insert("foo".to_string());
         let e2 = registry.insert("bar".to_string());
         assert!(e1.exists(&registry));
         assert!(e2.exists(&registry));
-        registry.free(e1);
+        assert_eq!(registry.get(e1), Some(&"foo".to_string()));
+        assert_eq!(registry.get(e2), Some(&"bar".to_string()));
+        assert_eq!(registry.get_mut(e1), Some(&mut "foo".to_string()));
+        assert_eq!(registry.get_mut(e2), Some(&mut "bar".to_string()));
+        assert_eq!(&registry[e1], "foo");
+        assert_eq!(&registry[e2], "bar");
+        assert_eq!(&mut registry[e1], "foo");
+        assert_eq!(&mut registry[e2], "bar");
+        registry.remove(e1);
         assert!(e1.is_dangling(&registry));
         assert!(e2.exists(&registry));
-        registry.free(e2);
+        assert_eq!(registry.get(e1), None);
+        assert_eq!(registry.get(e2), Some(&"bar".to_string()));
+        assert_eq!(registry.get_mut(e1), None);
+        assert_eq!(registry.get_mut(e2), Some(&mut "bar".to_string()));
+        assert_eq!(&registry[e2], "bar");
+        assert_eq!(&mut registry[e2], "bar");
+        registry.remove(e2);
         assert!(e1.is_dangling(&registry));
         assert!(e2.is_dangling(&registry));
+        assert_eq!(registry.get(e1), None);
+        assert_eq!(registry.get(e2), None);
+        assert_eq!(registry.get_mut(e1), None);
+        assert_eq!(registry.get_mut(e2), None);
     }
 
     #[test]
@@ -324,7 +378,7 @@ mod tests {
     fn test_dangling_id_after_recycle_panics() {
         let mut registry = Registry::new();
         let id = registry.insert(());
-        registry.free(id);
+        registry.remove(id);
         registry.recycle();
         registry.contains_id(id);
     }
@@ -394,11 +448,11 @@ mod tests {
         assert_eq!(e0.generation().get(), 1);
         assert_eq!(e1.index(), 1);
         assert_eq!(e1.generation().get(), 1);
-        registry.free(e0);
+        registry.remove(e0);
         assert_eq!(registry.generations, [-1, 1]);
         assert_eq!(registry.free_indexes, []);
         assert_eq!(registry.retired_indexes, [0]);
-        registry.free(e1);
+        registry.remove(e1);
         assert_eq!(registry.generations, [-1, -1]);
         assert_eq!(registry.free_indexes, []);
         assert_eq!(registry.retired_indexes, [0, 1]);
@@ -415,7 +469,7 @@ mod tests {
         let mut registry = Registry::<(), 2>::with_gbits();
         let mut id = registry.insert(());
         assert_eq!(registry.generations, [1]);
-        registry.free(id);
+        registry.remove(id);
         assert_eq!(registry.generations, [-1]);
         assert_eq!(registry.free_indexes, [0]);
         assert_eq!(registry.retired_indexes, []);
@@ -423,7 +477,7 @@ mod tests {
         assert_eq!(registry.generations, [2]);
         assert_eq!(registry.free_indexes, []);
         assert_eq!(registry.retired_indexes, []);
-        registry.free(id);
+        registry.remove(id);
         assert_eq!(registry.generations, [-2]);
         assert_eq!(registry.free_indexes, [0]);
         assert_eq!(registry.retired_indexes, []);
@@ -431,7 +485,7 @@ mod tests {
         assert_eq!(registry.generations, [3]);
         assert_eq!(registry.free_indexes, []);
         assert_eq!(registry.retired_indexes, []);
-        registry.free(id);
+        registry.remove(id);
         assert_eq!(registry.generations, [-3]);
         assert_eq!(registry.free_indexes, []);
         assert_eq!(registry.retired_indexes, [0]);
@@ -439,7 +493,7 @@ mod tests {
         assert_eq!(registry.generations, [-3, 1]);
         assert_eq!(registry.free_indexes, []);
         assert_eq!(registry.retired_indexes, [0]);
-        registry.free(id);
+        registry.remove(id);
         assert_eq!(registry.generations, [-3, -1]);
         assert_eq!(registry.free_indexes, [1]);
         assert_eq!(registry.retired_indexes, [0]);
