@@ -1,6 +1,9 @@
 [package]
-name = "rrentity"
+name = "riddance"
 version = "0.0.0"
+authors = ["Jack O'Connor <oconnor663@gmail.com>"]
 edition = "2021"
-
-[dependencies]
+description = "retiring, recyclable, reservable IDs"
+documentation = "https://docs.rs/riddance"
+repository = "https://github.com/oconnor663/riddance"
+license = "MIT OR Apache-2.0"
