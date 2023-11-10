@@ -237,12 +237,12 @@ impl<T, const GBITS: u32> Registry<T, GBITS> {
         self.try_insert(value).expect("all slots are occupied")
     }
 
-    pub fn remove(&mut self, id: Id<T, GBITS>) {
+    pub fn remove(&mut self, id: Id<T, GBITS>) -> Option<T> {
         self.debug_detect_logic_errors(id);
         if let Some(slot) = self.generations.get_mut(id.index() as usize) {
             if *slot == id.generation().get() as i16 {
                 // Push before freeing the slot, since push could panic.
-                if *slot == max_generation::<GBITS>() {
+                if *slot >= max_generation::<GBITS>() {
                     self.retired_indexes.push(id.index());
                 } else {
                     self.free_indexes.push(id.index());
@@ -250,12 +250,13 @@ impl<T, const GBITS: u32> Registry<T, GBITS> {
                 // A negative generation in the slots list means a free or retired slot. But note
                 // that the generation in an Id is never negative.
                 *slot = -(*slot);
-                // Finally drop the old value. This could also panic.
+                // Read out the old value. The slot is now logically uninitialized.
                 unsafe {
-                    self.values[id.index() as usize].assume_init_drop();
+                    return Some(self.values[id.index() as usize].assume_init_read());
                 }
             }
         }
+        None
     }
 
     /// Move all retired slots to the free list, and set every slot in the free list to generation
@@ -354,7 +355,8 @@ mod tests {
         assert_eq!(&registry[e2], "bar");
         assert_eq!(&mut registry[e1], "foo");
         assert_eq!(&mut registry[e2], "bar");
-        registry.remove(e1);
+
+        assert_eq!(registry.remove(e1), Some("foo".into()));
         assert!(e1.is_dangling(&registry));
         assert!(e2.exists(&registry));
         assert_eq!(registry.get(e1), None);
@@ -363,7 +365,8 @@ mod tests {
         assert_eq!(registry.get_mut(e2), Some(&mut "bar".to_string()));
         assert_eq!(&registry[e2], "bar");
         assert_eq!(&mut registry[e2], "bar");
-        registry.remove(e2);
+
+        assert_eq!(registry.remove(e2), Some("bar".into()));
         assert!(e1.is_dangling(&registry));
         assert!(e2.is_dangling(&registry));
         assert_eq!(registry.get(e1), None);
