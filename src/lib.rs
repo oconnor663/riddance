@@ -414,7 +414,7 @@ where
     }
 }
 
-pub trait IdType: Sized + Copy {
+pub trait IdTrait: Sized + Copy {
     type IndexBits: Unsigned;
     type GenerationBits: Unsigned;
 
@@ -477,7 +477,7 @@ pub struct Id64<T>(
     PhantomData<fn() -> T>,
 );
 
-impl<T> IdType for Id64<T> {
+impl<T> IdTrait for Id64<T> {
     type IndexBits = typenum::U32;
     type GenerationBits = typenum::U31;
 
@@ -519,7 +519,7 @@ impl<T> Clone for Id64<T> {
 
 impl<T> std::fmt::Debug for Id64<T>
 where
-    Self: IdType,
+    Self: IdTrait,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         self.debug_format(f)
@@ -564,7 +564,7 @@ pub struct Id32<T, const GENERATION_BITS: usize>(
     PhantomData<fn() -> T>,
 );
 
-impl<T, const GENERATION_BITS: usize> IdType for Id32<T, GENERATION_BITS>
+impl<T, const GENERATION_BITS: usize> IdTrait for Id32<T, GENERATION_BITS>
 where
     typenum::Const<GENERATION_BITS>: typenum::ToUInt,
     typenum::U<GENERATION_BITS>: Unsigned,
@@ -608,7 +608,7 @@ impl<T, const GENERATION_BITS: usize> Clone for Id32<T, GENERATION_BITS> {
 
 impl<T, const GENERATION_BITS: usize> std::fmt::Debug for Id32<T, GENERATION_BITS>
 where
-    Self: IdType,
+    Self: IdTrait,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         self.debug_format(f)
@@ -647,7 +647,7 @@ impl<T, const GENERATION_BITS: usize> Ord for Id32<T, GENERATION_BITS> {
 pub type Id<T> = Id64<T>;
 
 #[derive(Clone, Debug)]
-pub struct Registry<T, ID: IdType = Id<T>> {
+pub struct Registry<T, ID: IdTrait = Id<T>> {
     slots: Slots<T, ID::GenerationBits>,
     free_indexes: Vec<u32>,
     retired_indexes: Vec<u32>,
@@ -659,7 +659,7 @@ impl<T> Registry<T, Id<T>> {
     }
 }
 
-impl<T, ID: IdType> Registry<T, ID> {
+impl<T, ID: IdTrait> Registry<T, ID> {
     pub fn with_id_type() -> Self {
         Self::with_id_type_and_capacity(0)
     }
@@ -815,7 +815,7 @@ impl<T, ID: IdType> Registry<T, ID> {
     }
 }
 
-impl<T, ID: IdType> std::ops::Index<ID> for Registry<T, ID> {
+impl<T, ID: IdTrait> std::ops::Index<ID> for Registry<T, ID> {
     type Output = T;
 
     fn index(&self, id: ID) -> &T {
@@ -823,7 +823,7 @@ impl<T, ID: IdType> std::ops::Index<ID> for Registry<T, ID> {
     }
 }
 
-impl<T, ID: IdType> std::ops::IndexMut<ID> for Registry<T, ID> {
+impl<T, ID: IdTrait> std::ops::IndexMut<ID> for Registry<T, ID> {
     fn index_mut(&mut self, id: ID) -> &mut T {
         self.get_mut(id).unwrap()
     }
@@ -841,7 +841,7 @@ mod tests {
         PhantomData<fn() -> T>,
     );
 
-    impl<T, const GENERATION_BITS: usize> IdType for Id8<T, GENERATION_BITS>
+    impl<T, const GENERATION_BITS: usize> IdTrait for Id8<T, GENERATION_BITS>
     where
         typenum::Const<GENERATION_BITS>: typenum::ToUInt,
         typenum::U<GENERATION_BITS>: Unsigned,
@@ -977,7 +977,7 @@ mod tests {
 
     fn full_registry<const GENERATION_BITS: usize>() -> Registry<(), Id8<(), GENERATION_BITS>>
     where
-        Id8<(), GENERATION_BITS>: IdType,
+        Id8<(), GENERATION_BITS>: IdTrait,
     {
         let mut registry = Registry::<(), Id8<(), GENERATION_BITS>>::with_id_type();
         // One index is unrepresentable, and another is reserved for the null ID.
@@ -1102,7 +1102,7 @@ mod tests {
 
     // This test does a few asserts, but its real purpose is to run under Miri and make sure we
     // don't leak memory or touch any freed memory.
-    fn do_cloning_and_dropping<ID: IdType>() {
+    fn do_cloning_and_dropping<ID: IdTrait>() {
         const NUM_INSERTIONS: usize = 100;
         // We're going to do 100 insertions but also 50 removals, so we need 6 index bits.
         let mut registry = Registry::<String, ID>::with_id_type();
