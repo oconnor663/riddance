@@ -1170,4 +1170,11 @@ mod tests {
         assert_eq!(registry.slots.len, 1);
         assert_eq!(clone.slots.len, 1);
     }
+
+    #[test]
+    fn test_id_sizes() {
+        assert_eq!(1, mem::size_of::<Id8<(), 4>>());
+        assert_eq!(4, mem::size_of::<Id32<(), 10>>());
+        assert_eq!(8, mem::size_of::<Id64<()>>());
+    }
 }
