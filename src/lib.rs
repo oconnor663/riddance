@@ -644,6 +644,7 @@ impl<T, const GENERATION_BITS: usize> Ord for Id32<T, GENERATION_BITS> {
     }
 }
 
+/// the default 64-bit ID type
 pub type Id<T> = Id64<T>;
 
 #[derive(Clone, Debug)]
@@ -654,16 +655,30 @@ pub struct Registry<T, ID: IdTrait = Id<T>> {
 }
 
 impl<T> Registry<T, Id<T>> {
+    /// Constructs a new, empty `Registry<T>` with the default [`Id`] type.
+    ///
+    /// The registry will not allocate until elements are inserted into it.
     pub fn new() -> Self {
         Self::with_id_type()
+    }
+
+    /// Constructs a new, empty `Registry<T>` with the default `Id` type and with at least the
+    /// specified capacity.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self::with_id_type_and_capacity(capacity)
     }
 }
 
 impl<T, ID: IdTrait> Registry<T, ID> {
+    /// Constructs a new, empty `Registry<T>` with a custom ID type.
+    ///
+    /// The registry will not allocate until elements are inserted into it.
     pub fn with_id_type() -> Self {
         Self::with_id_type_and_capacity(0)
     }
 
+    /// Constructs a new, empty `Registry<T>` with a custom ID type and with at least the specified
+    /// capacity.
     pub fn with_id_type_and_capacity(capacity: usize) -> Self {
         static_assert_index_bits::<ID::IndexBits>();
         static_assert_generation_bits::<ID::GenerationBits>();
@@ -1203,5 +1218,13 @@ mod tests {
         assert_eq!(1, mem::size_of::<Id8<(), 4>>());
         assert_eq!(4, mem::size_of::<Id32<(), 10>>());
         assert_eq!(8, mem::size_of::<Id64<()>>());
+    }
+
+    #[test]
+    fn test_with_capacity() {
+        for cap in 0..100 {
+            let registry = Registry::<String>::with_capacity(cap);
+            assert!(registry.capacity() >= cap);
+        }
     }
 }
