@@ -836,7 +836,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     /// `Registry` makes a best effort to detect violations of this rule. _Any_ method on
     /// `Registry` may panic if it sees an ID generation that's newer than the corresponding slot.
     ///
-    /// [`null`]: Id::null
+    /// [`null`]: IdTrait::null
     /// [`remove`]: Registry::remove
     /// [`get`]: Registry::get
     /// [`get_mut`]: Registry::get_mut
