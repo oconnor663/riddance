@@ -248,7 +248,7 @@ impl<T, GenerationBits: Unsigned> Slots<T, GenerationBits> {
         &*self.values_ptr.as_ptr().add(index as usize)
     }
 
-    unsafe fn value_mut_unchecked(&mut self, index: u32) -> &mut MaybeUninit<T> {
+    unsafe fn value_unchecked_mut(&mut self, index: u32) -> &mut MaybeUninit<T> {
         &mut *self.values_ptr.as_ptr().add(index as usize)
     }
 
@@ -313,7 +313,7 @@ impl<T, GenerationBits: Unsigned> Drop for Slots<T, GenerationBits> {
             if mem::needs_drop::<T>() {
                 for i in 0..self.len {
                     if state_is_occupied::<GenerationBits>(self.state_unchecked(i)) {
-                        self.value_mut_unchecked(i).assume_init_drop();
+                        self.value_unchecked_mut(i).assume_init_drop();
                     }
                 }
             }
@@ -374,7 +374,7 @@ where
                 if state_is_occupied::<GenerationBits>(self.state_unchecked(i)) {
                     // These clones could panic.
                     let cloned_element = self.value_unchecked(i).assume_init_ref().clone();
-                    cloned_slots.value_mut_unchecked(i).write(cloned_element);
+                    cloned_slots.value_unchecked_mut(i).write(cloned_element);
                     cloned_slots.len = i + 1;
                 }
             }
@@ -703,6 +703,15 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         );
     }
 
+    /// Returns a reference to an element without checking the size of the Registry or the
+    /// generation of the ID.
+    ///
+    /// It's undefined behavior to call this function if `self.contains_id(id)` would return
+    /// `false`.
+    pub unsafe fn get_unchecked(&self, id: ID) -> &T {
+        self.slots.value_unchecked(id.index()).assume_init_ref()
+    }
+
     pub fn get(&self, id: ID) -> Option<&T> {
         self.debug_best_effort_checks_for_contract_violations(id);
         let Some(state) = self.slots.state(id.index()) else {
@@ -712,7 +721,16 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         if state != id.generation() {
             return None;
         }
-        unsafe { Some(self.slots.value_unchecked(id.index()).assume_init_ref()) }
+        unsafe { Some(self.get_unchecked(id)) }
+    }
+
+    /// Returns a mutable reference to an element without checking the size of the Registry or the
+    /// generation of the ID.
+    ///
+    /// It's undefined behavior to call this function if `self.contains_id(id)` would return
+    /// `false`.
+    pub unsafe fn get_unchecked_mut(&mut self, id: ID) -> &mut T {
+        self.slots.value_unchecked_mut(id.index()).assume_init_mut()
     }
 
     pub fn get_mut(&mut self, id: ID) -> Option<&mut T> {
@@ -724,7 +742,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         if state != id.generation() {
             return None;
         }
-        unsafe { Some(self.slots.value_mut_unchecked(id.index()).assume_init_mut()) }
+        unsafe { Some(self.get_unchecked_mut(id)) }
     }
 
     pub fn contains_id(&self, id: ID) -> bool {
@@ -741,7 +759,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
                 // generation will wrap back to 0.
                 let occupied_state = occupied_state_from_empty::<ID::GenerationBits>(empty_state);
                 self.slots.set_state_unchecked(index, occupied_state);
-                self.slots.value_mut_unchecked(index).write(value);
+                self.slots.value_unchecked_mut(index).write(value);
                 // The flag bit is zero for the occupied state, so its value is equal to the
                 // generation of the new ID.
                 return ID::new_unchecked(index, occupied_state);
@@ -753,7 +771,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         // the value here.
         self.slots.reserve(1);
         unsafe {
-            self.slots.value_mut_unchecked(self.slots.len).write(value);
+            self.slots.value_unchecked_mut(self.slots.len).write(value);
             let new_id = ID::new_unchecked(self.slots.len, 0);
             self.slots.len += 1;
             new_id
