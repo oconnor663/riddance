@@ -1050,6 +1050,7 @@ mod tests {
         let mut registry = Registry::<(), Id8<(), 0>>::with_id_type();
         let e0 = registry.insert(());
         let e1 = registry.insert(());
+        assert_eq!(registry.len(), 2);
         assert_eq!(registry.slots.state(0), Some(0));
         assert_eq!(registry.slots.state(1), Some(0));
         assert_eq!(e0.index(), 0);
@@ -1057,16 +1058,19 @@ mod tests {
         assert_eq!(e1.index(), 1);
         assert_eq!(e1.generation(), 0);
         registry.remove(e0);
+        assert_eq!(registry.len(), 1);
         assert_eq!(registry.slots.state(0), Some(1));
         assert_eq!(registry.slots.state(1), Some(0));
         assert_eq!(registry.free_indexes, []);
         assert_eq!(registry.retired_indexes, [0]);
         registry.remove(e1);
+        assert_eq!(registry.len(), 0);
         assert_eq!(registry.slots.state(0), Some(1));
         assert_eq!(registry.slots.state(1), Some(1));
         assert_eq!(registry.free_indexes, []);
         assert_eq!(registry.retired_indexes, [0, 1]);
         registry.recycle();
+        assert_eq!(registry.len(), 0);
         assert_eq!(registry.slots.state(0), Some(1));
         assert_eq!(registry.slots.state(1), Some(1));
         assert_eq!(registry.free_indexes, [0, 1]);
@@ -1083,12 +1087,14 @@ mod tests {
         let mut id = registry.insert(());
         assert_eq!(id.index(), 0);
         assert_eq!(id.generation(), 0);
+        assert_eq!(registry.len(), 1);
         assert_eq!(registry.slots.len, 1);
         assert_eq!(registry.slots.state(0), Some(0b00));
         assert_eq!(registry.free_indexes, []);
         assert_eq!(registry.retired_indexes, []);
 
         registry.remove(id);
+        assert_eq!(registry.len(), 0);
         assert_eq!(registry.slots.len, 1);
         assert_eq!(registry.slots.state(0), Some(0b10));
         assert_eq!(registry.free_indexes, [0]);
@@ -1097,12 +1103,14 @@ mod tests {
         id = registry.insert(());
         assert_eq!(id.index(), 0);
         assert_eq!(id.generation(), 1);
+        assert_eq!(registry.len(), 1);
         assert_eq!(registry.slots.len, 1);
         assert_eq!(registry.slots.state(0), Some(0b01));
         assert_eq!(registry.free_indexes, []);
         assert_eq!(registry.retired_indexes, []);
 
         registry.remove(id);
+        assert_eq!(registry.len(), 0);
         assert_eq!(registry.slots.len, 1);
         assert_eq!(registry.slots.state(0), Some(0b11));
         assert_eq!(registry.free_indexes, []);
@@ -1111,6 +1119,7 @@ mod tests {
         id = registry.insert(());
         assert_eq!(id.index(), 1);
         assert_eq!(id.generation(), 0);
+        assert_eq!(registry.len(), 1);
         assert_eq!(registry.slots.len, 2);
         assert_eq!(registry.slots.state(0), Some(0b11));
         assert_eq!(registry.slots.state(1), Some(0b00));
