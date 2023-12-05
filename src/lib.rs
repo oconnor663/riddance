@@ -148,7 +148,7 @@ unsafe fn write_state<GenerationBits: Unsigned>(state_words: *mut u32, index: u3
 // used in the implementation of Vec. See https://doc.rust-lang.org/nomicon/phantom-data.html and
 // https://github.com/rust-lang/rust/blob/1.74.0/library/core/src/ptr/unique.rs#L37-L45.
 #[repr(transparent)]
-pub struct Unique<T> {
+struct Unique<T> {
     pointer: NonNull<T>,
     _phantom: PhantomData<T>,
 }
