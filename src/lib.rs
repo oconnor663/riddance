@@ -655,14 +655,14 @@ pub struct Registry<T, ID: IdTrait = Id<T>> {
 }
 
 impl<T> Registry<T, Id<T>> {
-    /// Constructs a new, empty `Registry<T>` with the default [`Id`] type.
+    /// Construct a new, empty `Registry<T>` with the default [`Id`] type.
     ///
     /// The registry will not allocate until elements are inserted into it.
     pub fn new() -> Self {
         Self::with_id_type()
     }
 
-    /// Constructs a new, empty `Registry<T>` with the default `Id` type and with at least the
+    /// Construct a new, empty `Registry<T>` with the default `Id` type and with at least the
     /// specified capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self::with_id_type_and_capacity(capacity)
@@ -670,14 +670,14 @@ impl<T> Registry<T, Id<T>> {
 }
 
 impl<T, ID: IdTrait> Registry<T, ID> {
-    /// Constructs a new, empty `Registry<T>` with a custom ID type.
+    /// Construct a new, empty `Registry<T>` with a custom ID type.
     ///
     /// The registry will not allocate until elements are inserted into it.
     pub fn with_id_type() -> Self {
         Self::with_id_type_and_capacity(0)
     }
 
-    /// Constructs a new, empty `Registry<T>` with a custom ID type and with at least the specified
+    /// Construct a new, empty `Registry<T>` with a custom ID type and with at least the specified
     /// capacity.
     pub fn with_id_type_and_capacity(capacity: usize) -> Self {
         static_assert_index_bits::<ID::IndexBits>();
@@ -718,50 +718,50 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         );
     }
 
-    /// Returns a reference to an element without checking the size of the Registry or the
-    /// generation of the ID.
+    pub fn contains_id(&self, id: ID) -> bool {
+        self.debug_best_effort_checks_for_contract_violations(id);
+        if let Some(state) = self.slots.state(id.index()) {
+            // This comparison can only succeed if the generation matches and the flag bit is 0.
+            state == id.generation()
+        } else {
+            false
+        }
+    }
+
+    // Get a reference to an element. If [`remove`](Registry::remove) has been called on `id`,
+    // `get` will return `None`.
+    pub fn get(&self, id: ID) -> Option<&T> {
+        if self.contains_id(id) {
+            Some(unsafe { self.get_unchecked(id) })
+        } else {
+            None
+        }
+    }
+
+    // Get a mutable reference to an element. If [`remove`](Registry::remove) has been called on
+    // `id`, `get_mut` will return `None`.
+    pub fn get_mut(&mut self, id: ID) -> Option<&mut T> {
+        if self.contains_id(id) {
+            Some(unsafe { self.get_unchecked_mut(id) })
+        } else {
+            None
+        }
+    }
+
+    /// Get a reference to an element without checking the size of the Registry or the generation
+    /// of the ID.
     ///
-    /// It's undefined behavior to call this function if `self.contains_id(id)` would return
-    /// `false`.
+    /// This function is safe if and only if `self.contains_id(id)` is `true`.
     pub unsafe fn get_unchecked(&self, id: ID) -> &T {
         self.slots.value_unchecked(id.index()).assume_init_ref()
     }
 
-    pub fn get(&self, id: ID) -> Option<&T> {
-        self.debug_best_effort_checks_for_contract_violations(id);
-        let Some(state) = self.slots.state(id.index()) else {
-            return None;
-        };
-        // This comparison can only succeed if the generation matches and the flag bit is 0.
-        if state != id.generation() {
-            return None;
-        }
-        unsafe { Some(self.get_unchecked(id)) }
-    }
-
-    /// Returns a mutable reference to an element without checking the size of the Registry or the
+    /// Get a mutable reference to an element without checking the size of the Registry or the
     /// generation of the ID.
     ///
-    /// It's undefined behavior to call this function if `self.contains_id(id)` would return
-    /// `false`.
+    /// This function is safe if and only if `self.contains_id(id)` is `true`.
     pub unsafe fn get_unchecked_mut(&mut self, id: ID) -> &mut T {
         self.slots.value_unchecked_mut(id.index()).assume_init_mut()
-    }
-
-    pub fn get_mut(&mut self, id: ID) -> Option<&mut T> {
-        self.debug_best_effort_checks_for_contract_violations(id);
-        let Some(state) = self.slots.state(id.index()) else {
-            return None;
-        };
-        // This comparison can only succeed if the generation matches and the flag bit is 0.
-        if state != id.generation() {
-            return None;
-        }
-        unsafe { Some(self.get_unchecked_mut(id)) }
-    }
-
-    pub fn contains_id(&self, id: ID) -> bool {
-        self.get(id).is_some()
     }
 
     #[must_use]
