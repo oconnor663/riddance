@@ -4,19 +4,23 @@ use std::marker::PhantomData;
 use std::mem::{self, ManuallyDrop, MaybeUninit};
 use std::num::{NonZeroU32, NonZeroU64};
 use std::ptr::{self, NonNull};
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use typenum::Unsigned;
 
+// These "static" asserts will get compiled out in any case we care about. Someday we'll be able to
+// actually enforce these bounds statically.
 fn static_assert_index_bits<IndexBits: Unsigned>() {
-    // These asserts will get compiled out in any case we care about. Someday we'll be able to
-    // actually enforce these bounds statically.
     assert!(IndexBits::U32 >= 1);
     assert!(IndexBits::U32 <= 32);
 }
 
 fn static_assert_generation_bits<GenerationBits: Unsigned>() {
-    // This assert will get compiled out in any case we care about. Someday we'll be able to
-    // actually enforce this bound statically.
     assert!(GenerationBits::U32 <= 31);
+}
+
+// We do u32 -> usize casts all over the place.
+fn static_assert_u32_fits_in_usize() {
+    assert!(mem::size_of::<usize>() >= mem::size_of::<u32>());
 }
 
 fn debug_assert_high_state_bits_clear<GenerationBits: Unsigned>(state: u32) {
@@ -65,7 +69,7 @@ fn occupied_state_from_empty<GenerationBits: Unsigned>(empty_state: u32) -> u32 
     (empty_state + 1) & !(u32::MAX << GenerationBits::U32)
 }
 
-fn word_count_from_state_count<GenerationBits: Unsigned>(state_count: usize) -> usize {
+fn word_count_from_state_count<GenerationBits: Unsigned>(state_count: u32) -> u32 {
     // NOTE: The number of state bits is GenerationBits + 1.
     match GenerationBits::U32 {
         32.. => panic!("generation bits must be 31 or less"),
@@ -78,7 +82,7 @@ fn word_count_from_state_count<GenerationBits: Unsigned>(state_count: usize) -> 
     }
 }
 
-fn state_count_from_word_count<GenerationBits: Unsigned>(word_count: usize) -> usize {
+fn state_count_from_word_count<GenerationBits: Unsigned>(word_count: u32) -> u32 {
     // NOTE: The number of state bits is GenerationBits + 1.
     match GenerationBits::U32 {
         32.. => panic!("generation bits must be 31 or less"),
@@ -91,7 +95,7 @@ fn state_count_from_word_count<GenerationBits: Unsigned>(word_count: usize) -> u
     }
 }
 
-const fn unused_states_in_last_word<GenerationBits: Unsigned>(state_count: usize) -> usize {
+const fn unused_states_in_last_word<GenerationBits: Unsigned>(state_count: u32) -> u32 {
     // NOTE: The number of state bits is GenerationBits + 1.
     match GenerationBits::U32 {
         32.. => panic!("generation bits must be 31 or less"),
@@ -120,26 +124,26 @@ unsafe fn read_state<GenerationBits: Unsigned>(state_words: *const u32, index: u
 
 unsafe fn write_state<GenerationBits: Unsigned>(state_words: *mut u32, index: u32, state: u32) {
     debug_assert_high_state_bits_clear::<GenerationBits>(state);
-    let index = index as usize;
+    let i = index as usize;
     match GenerationBits::U32 {
         32.. => panic!("generation bits must be 31 or less"),
-        16..=31 => *state_words.add(index as usize) = state,
-        8..=15 => *(state_words as *mut u16).add(index) = state as u16,
-        4..=7 => *(state_words as *mut u8).add(index) = state as u8,
+        16..=31 => *state_words.add(i as usize) = state,
+        8..=15 => *(state_words as *mut u16).add(i) = state as u16,
+        4..=7 => *(state_words as *mut u8).add(i) = state as u8,
         2..=3 => {
-            let entry = &mut *(state_words as *mut u8).add(index / 2);
-            *entry &= !(0b1111 << (4 * (index % 2)));
-            *entry |= (state as u8 & 0b1111) << (4 * (index % 2));
+            let entry = &mut *(state_words as *mut u8).add(i / 2);
+            *entry &= !(0b1111 << (4 * (i % 2)));
+            *entry |= (state as u8 & 0b1111) << (4 * (i % 2));
         }
         1 => {
-            let entry = &mut *(state_words as *mut u8).add(index / 4);
-            *entry &= !(0b11 << (2 * (index % 4)));
-            *entry |= (state as u8 & 0b11) << (2 * (index % 4));
+            let entry = &mut *(state_words as *mut u8).add(i / 4);
+            *entry &= !(0b11 << (2 * (i % 4)));
+            *entry |= (state as u8 & 0b11) << (2 * (i % 4));
         }
         0 => {
-            let entry = &mut *(state_words as *mut u8).add(index / 8);
-            *entry &= !(0b1 << (index % 8));
-            *entry |= (state as u8 & 0b1) << (index % 8);
+            let entry = &mut *(state_words as *mut u8).add(i / 8);
+            *entry &= !(0b1 << (i % 8));
+            *entry |= (state as u8 & 0b1) << (i % 8);
         }
     }
 }
@@ -195,16 +199,13 @@ struct Slots<T, GenerationBits: Unsigned> {
 }
 
 impl<T, GenerationBits: Unsigned> Slots<T, GenerationBits> {
-    fn with_capacity(capacity: usize) -> Self {
-        if capacity > u32::MAX as usize {
-            panic!("requested capacity exceeds u32::MAX");
-        }
+    fn with_capacity(capacity: u32) -> Self {
         // Don't allocate these Vecs directly into ManuallyDrop, because the second allocation
         // might panic, and we don't want to leak the first one in that case. Instead, move them
         // into ManuallyDrop only after both allocations have succeeded.
-        let values = Vec::with_capacity(capacity);
+        let values = Vec::with_capacity(capacity as usize);
         let mut state_words =
-            Vec::with_capacity(word_count_from_state_count::<GenerationBits>(capacity));
+            Vec::with_capacity(word_count_from_state_count::<GenerationBits>(capacity) as usize);
         // Zero-initialize all the capacity in state_words.
         unsafe {
             ptr::write_bytes(state_words.as_mut_ptr(), 0, state_words.capacity());
@@ -221,11 +222,11 @@ impl<T, GenerationBits: Unsigned> Slots<T, GenerationBits> {
         }
     }
 
-    pub fn capacity(&self) -> usize {
-        cmp::min(
-            self.values_cap,
-            state_count_from_word_count::<GenerationBits>(self.state_words_cap),
-        )
+    pub fn capacity(&self) -> u32 {
+        let state_words: u32 = self.state_words_cap.try_into().unwrap_or(u32::MAX);
+        let states: u32 = state_count_from_word_count::<GenerationBits>(state_words);
+        let values: u32 = self.values_cap.try_into().unwrap_or(u32::MAX);
+        cmp::min(states, values)
     }
 
     unsafe fn state_unchecked(&self, index: u32) -> u32 {
@@ -267,17 +268,17 @@ impl<T, GenerationBits: Unsigned> Slots<T, GenerationBits> {
     unsafe fn reconstitute_state_words_vec(&self) -> ManuallyDrop<Vec<u32>> {
         ManuallyDrop::new(Vec::from_raw_parts(
             self.state_words_ptr.as_ptr(),
-            word_count_from_state_count::<GenerationBits>(self.len as usize),
+            word_count_from_state_count::<GenerationBits>(self.len) as usize,
             self.state_words_cap,
         ))
     }
 
-    fn reserve(&mut self, additional: usize) {
-        if (additional > u32::MAX as usize) || self.len.checked_add(additional as u32).is_none() {
+    fn reserve(&mut self, additional: u32) {
+        if self.len.checked_add(additional).is_none() {
             panic!("requested capacity exceeds u32::MAX");
         }
         // Account for unused state bits in the rightmost u32 in use.
-        let last_word_cap = unused_states_in_last_word::<GenerationBits>(self.len as usize);
+        let last_word_cap = unused_states_in_last_word::<GenerationBits>(self.len);
         let additional_words =
             word_count_from_state_count::<GenerationBits>(additional.saturating_sub(last_word_cap));
         unsafe {
@@ -285,10 +286,10 @@ impl<T, GenerationBits: Unsigned> Slots<T, GenerationBits> {
             let mut state_words = self.reconstitute_state_words_vec();
             // Either of these reserve calls could panic. We need to record any changes made by the
             // first call before we make the second call.
-            values.reserve(additional);
+            values.reserve(additional as usize);
             self.values_cap = values.capacity();
             self.values_ptr = Unique::from_vec(&values);
-            state_words.reserve(additional_words);
+            state_words.reserve(additional_words as usize);
             // Zero-initialize all the *new* capacity in state_words.
             ptr::write_bytes(
                 state_words.as_mut_ptr().add(self.state_words_cap),
@@ -329,25 +330,21 @@ where
         // Don't allocate these Vecs directly into ManuallyDrop, because the second allocation
         // might panic, and we don't want to leak the first one in that case. Instead, move them
         // into ManuallyDrop only after both allocations have succeeded.
-        let needed_capacity: usize = self.len.try_into().unwrap();
-        let new_values_vec = Vec::with_capacity(needed_capacity);
-        let needed_capacity_state_words =
-            word_count_from_state_count::<GenerationBits>(needed_capacity);
-        let mut new_state_words_vec = Vec::with_capacity(needed_capacity_state_words);
+        let new_values_vec = Vec::with_capacity(self.len as usize);
+        let state_words_cap = word_count_from_state_count::<GenerationBits>(self.len) as usize;
+        let mut new_state_words_vec = Vec::with_capacity(state_words_cap);
         // Memcpy all possibly-non-zero state words from self, and then zero-initialize any
         // additional capacity we received.
         unsafe {
             ptr::copy_nonoverlapping(
                 self.state_words_ptr.as_ptr(),
                 new_state_words_vec.as_mut_ptr(),
-                needed_capacity_state_words,
+                state_words_cap,
             );
             ptr::write_bytes(
-                new_state_words_vec
-                    .as_mut_ptr()
-                    .add(needed_capacity_state_words),
+                new_state_words_vec.as_mut_ptr().add(state_words_cap),
                 0,
-                new_state_words_vec.capacity() - needed_capacity_state_words,
+                new_state_words_vec.capacity() - state_words_cap,
             );
         }
         // Assemble the new Slots. Some of the state flag bits will indicate occupied slots, but as
@@ -647,11 +644,12 @@ impl<T, const GENERATION_BITS: usize> Ord for Id32<T, GENERATION_BITS> {
 /// the default 64-bit ID type
 pub type Id<T> = Id64<T>;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Registry<T, ID: IdTrait = Id<T>> {
     slots: Slots<T, ID::GenerationBits>,
     free_indexes: Vec<u32>,
     retired_indexes: Vec<u32>,
+    reservation_cursor: AtomicU32,
 }
 
 impl<T> Registry<T, Id<T>> {
@@ -682,10 +680,13 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     pub fn with_id_type_and_capacity(capacity: usize) -> Self {
         static_assert_index_bits::<ID::IndexBits>();
         static_assert_generation_bits::<ID::GenerationBits>();
+        static_assert_u32_fits_in_usize();
+        let capacity: u32 = capacity.try_into().expect("capacity overflow");
         Self {
             slots: Slots::with_capacity(capacity),
             free_indexes: Vec::new(),
             retired_indexes: Vec::new(),
+            reservation_cursor: AtomicU32::new(0),
         }
     }
 
@@ -694,7 +695,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     }
 
     pub fn capacity(&self) -> usize {
-        self.slots.capacity()
+        self.slots.capacity() as usize
     }
 
     // We currently check for two possible violations:
@@ -705,15 +706,28 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     //    above, you can also violate this rule by retaining a dangling ID across a call to
     //    recycle().
     fn debug_best_effort_checks_for_contract_violations(&self, id: ID) {
-        debug_assert!(
-            id.index() < self.slots.len,
-            "ID index is past the highest slot; is it from another Registry?",
-        );
-        let Some(state) = self.slots.state(id.index()) else {
+        if !cfg!(debug_assertions) {
             return;
+        }
+        if id.is_null() {
+            return;
+        }
+        if id.index() >= self.slots.len {
+            // This ID must be part of a pending reservation.
+            let new_slots_reserved =
+                self.reservation_cursor.load(Relaxed) - self.free_indexes.len() as u32;
+            debug_assert!(id.index() - self.slots.len < new_slots_reserved);
+            return;
+        }
+        let state = self.slots.state(id.index()).unwrap();
+        let max_generation = if state_is_occupied::<ID::GenerationBits>(state) {
+            state
+        } else {
+            // A pending reservation could have a generation that's one higher than its slot.
+            generation_from_state::<ID::GenerationBits>(state).saturating_add(1)
         };
         debug_assert!(
-            id.generation() <= generation_from_state::<ID::GenerationBits>(state),
+            id.generation() <= max_generation,
             "ID generation is newer than its slot; did it dangle across a recycle()?",
         );
     }
@@ -764,8 +778,8 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         self.slots.value_unchecked_mut(id.index()).assume_init_mut()
     }
 
-    #[must_use]
     pub fn insert(&mut self, value: T) -> ID {
+        assert_eq!(*self.reservation_cursor.get_mut(), 0, "pending reservation");
         // Reuse a free slot if there are any.
         if let Some(index) = self.free_indexes.pop() {
             unsafe {
@@ -794,6 +808,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     }
 
     pub fn remove(&mut self, id: ID) -> Option<T> {
+        assert_eq!(*self.reservation_cursor.get_mut(), 0, "pending reservation");
         self.debug_best_effort_checks_for_contract_violations(id);
         let Some(state) = self.slots.state(id.index()) else {
             return None;
@@ -814,6 +829,94 @@ impl<T, ID: IdTrait> Registry<T, ID> {
             self.slots.set_state_unchecked(id.index(), empty_state);
             Some(self.slots.value_unchecked(id.index()).assume_init_read())
         }
+    }
+
+    #[must_use]
+    pub fn reserve_ids(&self, count: usize) -> ReservationIter<T, ID> {
+        let count: u32 = count.try_into().expect("capacity overflow");
+        // Take the reservation with compare-exchange instead of a fetch-add, so that we can check
+        // for overflow.
+        let mut start = self.reservation_cursor.load(Relaxed);
+        let mut end;
+        loop {
+            // Make sure this reservation wouldn't overflow the reservation cursor.
+            end = start.checked_add(count).expect("capacity overflow");
+            // Make sure this reservation wouldn't overflow self.len.
+            let new_slots = end.saturating_sub(self.free_indexes.len() as u32);
+            self.slots
+                .len
+                .checked_add(new_slots)
+                .expect("capacity overflow");
+            // Make sure this reservation wouldn't exceed the available ID bits.
+            assert!(
+                self.slots.len + new_slots <= ID::max_len(),
+                "not enough index bits",
+            );
+            // Try to commit the reservation. Since we need to loop here anyway, we use the weak
+            // version of compare-exchange.
+            let result = self
+                .reservation_cursor
+                .compare_exchange_weak(start, end, Relaxed, Relaxed);
+            match result {
+                // success
+                Ok(_) => {
+                    return ReservationIter {
+                        registry: self,
+                        start,
+                        end,
+                    };
+                }
+                // failure, continue the loop
+                Err(new_start) => start = new_start,
+            }
+        }
+    }
+
+    pub fn fill_reservations_with<F>(&mut self, mut new_value_fn: F)
+    where
+        F: FnMut() -> T,
+    {
+        let cursor: &mut u32 = self.reservation_cursor.get_mut();
+        let reused_slots = cmp::min(*cursor, self.free_indexes.len() as u32);
+        let reused_slots_start = self.free_indexes.len() as u32 - reused_slots;
+        let new_slots = *cursor - reused_slots;
+        // We check for overflow in reserve_ids().
+        let new_len = self.slots.len + new_slots;
+
+        // Pre-allocate any new slots.
+        self.slots.reserve(new_slots);
+
+        // Reuse free slots.
+        for i in (reused_slots_start as usize..self.free_indexes.len()).rev() {
+            unsafe {
+                let free_index = *self.free_indexes.get_unchecked(i);
+                let state = self.slots.state_unchecked(free_index);
+                let new_state = occupied_state_from_empty::<ID::GenerationBits>(state);
+                // This could panic. Do it before other writes.
+                self.slots
+                    .value_unchecked_mut(free_index)
+                    .write(new_value_fn());
+                self.slots.set_state_unchecked(free_index, new_state);
+            }
+            self.free_indexes.pop();
+            *cursor -= 1;
+        }
+        debug_assert_eq!(*cursor, new_slots);
+
+        // Populate any new slots we allocated above. Their states are already zero.
+        for _ in 0..new_slots {
+            unsafe {
+                // This could panic. Do it before other writes.
+                self.slots
+                    .value_unchecked_mut(self.slots.len)
+                    .write(new_value_fn());
+                debug_assert_eq!(self.slots.state_unchecked(self.slots.len), 0);
+            }
+            self.slots.len += 1;
+            *cursor -= 1;
+        }
+        debug_assert_eq!(*cursor, 0);
+        debug_assert_eq!(new_len, self.slots.len);
     }
 
     /// Mark all retired slots as free. You **must** delete all dangling IDs (or replace them with
@@ -843,8 +946,30 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     /// [`contains_id`]: Registry::contains_id
     /// [`HashMap`]: https://doc.rust-lang.org/std/collections/struct.HashMap.html
     pub fn recycle(&mut self) {
+        assert_eq!(*self.reservation_cursor.get_mut(), 0, "pending reservation");
         // This clears retired_indexes.
         self.free_indexes.append(&mut self.retired_indexes);
+    }
+}
+
+impl<T, ID: IdTrait> Clone for Registry<T, ID>
+where
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        let cloned = Self {
+            slots: self.slots.clone(),
+            free_indexes: self.free_indexes.clone(),
+            retired_indexes: self.retired_indexes.clone(),
+            reservation_cursor: AtomicU32::new(0),
+        };
+        // Reservations are atomic, so one thread taking a reservation can race against another
+        // thread cloning. This isn't a data race, and it isn't UB, but it's almost certainly a
+        // bug, so we panic if we detect it.
+        if self.reservation_cursor.load(Relaxed) != 0 {
+            panic!("can't clone a Registry with pending reservations");
+        }
+        cloned
     }
 }
 
@@ -862,10 +987,47 @@ impl<T, ID: IdTrait> std::ops::IndexMut<ID> for Registry<T, ID> {
     }
 }
 
+pub struct ReservationIter<'registry, T, ID: IdTrait = Id<T>> {
+    registry: &'registry Registry<T, ID>,
+    // Note that these bounds are positions in (or beyond) the free list, not slot indexes.
+    start: u32,
+    end: u32,
+}
+
+impl<'registry, T, ID: IdTrait> Iterator for ReservationIter<'registry, T, ID> {
+    type Item = ID;
+
+    fn next(&mut self) -> Option<ID> {
+        if self.start < self.end {
+            let id = unsafe {
+                if (self.start as usize) < self.registry.free_indexes.len() {
+                    let index = *self
+                        .registry
+                        .free_indexes
+                        .get_unchecked(self.start as usize);
+                    let state = self.registry.slots.state_unchecked(self.start);
+                    let generation = occupied_state_from_empty::<ID::GenerationBits>(state);
+                    ID::new_unchecked(index, generation)
+                } else {
+                    let index = self.registry.slots.len
+                        + (self.start - self.registry.free_indexes.len() as u32);
+                    // reserve_ids checked that these indexes won't exceed ID::max_len.
+                    ID::new_unchecked(index, 0)
+                }
+            };
+            self.start += 1;
+            Some(id)
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::num::NonZeroU8;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     #[repr(transparent)]
     pub struct Id8<T, const GENERATION_BITS: usize>(
@@ -956,7 +1118,7 @@ mod tests {
         let registry1 = Registry::new();
         let mut registry2 = Registry::new();
         let id = registry2.insert(());
-        let result = std::panic::catch_unwind(|| registry1.contains_id(id));
+        let result = catch_unwind(|| registry1.contains_id(id));
         if cfg!(debug_assertions) {
             // In debug mode, we detect the contract violation and panic.
             result.unwrap_err();
@@ -992,7 +1154,7 @@ mod tests {
         // Looking up id1 gives a false positive.
         assert!(registry.contains_id(id1));
         // Looking up id2 panics in debug mode.
-        let id2_result = std::panic::catch_unwind(|| registry.contains_id(id2));
+        let id2_result = catch_unwind(|| registry.contains_id(id2));
         if cfg!(debug_assertions) {
             // In debug mode, we detect the contract violation and panic.
             id2_result.unwrap_err();
@@ -1166,7 +1328,7 @@ mod tests {
         // allocating new slots.
         assert_eq!(registry.slots.len, cloned.slots.len);
         let first_unused_slot_word =
-            word_count_from_state_count::<ID::GenerationBits>(registry.slots.len as usize);
+            word_count_from_state_count::<ID::GenerationBits>(registry.slots.len) as usize;
         unsafe {
             // Note that the state_words_cap of the original might not equal that of the clone,
             // because it's up to the global allocator whether we get more capacity than we ask
@@ -1226,5 +1388,62 @@ mod tests {
             let registry = Registry::<String>::with_capacity(cap);
             assert!(registry.capacity() >= cap);
         }
+    }
+
+    #[test]
+    fn test_pending_reservation_panics() {
+        let mut registry = Registry::<String>::new();
+        _ = registry.reserve_ids(1);
+
+        // These methods don't panic.
+        let null = Id::null();
+        registry.len();
+        registry.capacity();
+        registry.contains_id(null);
+        registry.get(null);
+        registry.get_mut(null);
+
+        // These methods do panic.
+        catch_unwind(AssertUnwindSafe(|| registry.insert(String::new()))).unwrap_err();
+        catch_unwind(AssertUnwindSafe(|| registry.remove(null))).unwrap_err();
+        catch_unwind(AssertUnwindSafe(|| registry.recycle())).unwrap_err();
+        catch_unwind(AssertUnwindSafe(|| registry.clone())).unwrap_err();
+    }
+
+    #[test]
+    fn test_reserve_ids() {
+        let mut registry = Registry::<String>::new();
+        let id0_old = registry.insert("old".into());
+        let id1 = registry.insert("old".into());
+        registry.remove(id0_old);
+
+        let mut reservation = registry.reserve_ids(3);
+
+        let id0 = reservation.next().unwrap();
+        assert_eq!(id0.index(), 0);
+        assert_eq!(id0.generation(), 1);
+        assert!(registry.get(id0).is_none());
+
+        let id2 = reservation.next().unwrap();
+        assert_eq!(id2.index(), 2);
+        assert_eq!(id2.generation(), 0);
+        assert!(registry.get(id2).is_none());
+
+        let id3 = reservation.next().unwrap();
+        assert_eq!(id3.index(), 3);
+        assert_eq!(id3.generation(), 0);
+        assert!(registry.get(id3).is_none());
+
+        assert!(reservation.next().is_none());
+
+        assert!(registry.get(id0).is_none());
+        assert_eq!(registry.get(id1).unwrap(), "old");
+        assert!(registry.get(id2).is_none());
+        assert!(registry.get(id3).is_none());
+        registry.fill_reservations_with(|| "new".into());
+        assert_eq!(registry.get(id0).unwrap(), "new");
+        assert_eq!(registry.get(id1).unwrap(), "old");
+        assert_eq!(registry.get(id2).unwrap(), "new");
+        assert_eq!(registry.get(id3).unwrap(), "new");
     }
 }
