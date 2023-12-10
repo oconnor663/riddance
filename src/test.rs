@@ -531,3 +531,37 @@ fn test_empty_reservations() {
         assert_eq!(error.kind, FillEmptyReservationErrorKind::IndexOutOfBounds);
     }
 }
+
+#[test]
+fn test_fill_pending_reservations() {
+    let mut registry = Registry::<i32>::with_id_type();
+    let id0_old = registry.insert(99);
+    let id1_old = registry.insert(99);
+    registry.remove(id1_old);
+    registry.remove(id0_old);
+    let mut iterator = registry.reserve_ids(3);
+    let id0 = iterator.next().unwrap();
+    let id1 = iterator.next().unwrap();
+    let mut iterator = registry.reserve_ids(3);
+    let id2 = iterator.next().unwrap();
+    let id3 = iterator.next().unwrap();
+    registry.fill_pending_reservations(42);
+    for id in [id0, id1, id2, id3] {
+        assert_eq!(registry[id], 42);
+    }
+}
+
+#[test]
+fn test_fill_pending_reservations_with_id() {
+    type ID = Id<()>;
+    let mut registry = Registry::<ID, ID>::with_id_type();
+    let id0 = registry.reserve_id();
+    let mut iterator = registry.reserve_ids(3);
+    let id1 = iterator.next().unwrap();
+    let id2 = iterator.next().unwrap();
+    let id3 = iterator.next().unwrap();
+    registry.fill_pending_reservations_with_id(|id| id);
+    for id in [id0, id1, id2, id3] {
+        assert_eq!(id, registry[id]);
+    }
+}

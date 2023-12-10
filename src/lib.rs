@@ -855,7 +855,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     ///
     /// - [`fill_pending_reservations`]
     /// - [`fill_pending_reservations_with`]
-    /// - [`fill_pending_reservations_with_index`]
+    /// - [`fill_pending_reservations_with_id`]
     ///
     /// Alternatively, you can allocate empty reserved slots by calling
     /// [`allocate_empty_reservations`]. In that case [`contains_id`] keeps reporting `false` for
@@ -877,7 +877,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     /// [`get_mut`]: Registry::get_mut
     /// [`fill_pending_reservations`]: Registry::fill_pending_reservations
     /// [`fill_pending_reservations_with`]: Registry::fill_pending_reservations_with
-    /// [`fill_pending_reservations_with_index`]: Registry::fill_pending_reservations_with_index
+    /// [`fill_pending_reservations_with_id`]: Registry::fill_pending_reservations_with_id
     /// [`allocate_empty_reservations`]: Registry::allocate_empty_reservations
     /// [`insert`]: Registry::insert
     /// [`remove`]: Registry::remove
@@ -939,14 +939,61 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         }
     }
 
+    pub fn fill_pending_reservations(&mut self, value: T)
+    where
+        T: Copy,
+    {
+        let cursor = *self.reservation_cursor.get_mut() as usize;
+        let reused_slots = cmp::min(cursor, self.free_indexes.len());
+        let reused_slots_start = self.free_indexes.len() - reused_slots as usize;
+        let new_slots = (cursor - reused_slots) as u32;
+        // We check for overflow in reserve_ids().
+        let new_len = self.slots.len + new_slots;
+
+        // Pre-allocate any new slots. This is the only step that can fail.
+        self.slots.reserve(new_slots);
+
+        // Reuse free slots.
+        for i in (reused_slots_start..self.free_indexes.len()).rev() {
+            unsafe {
+                let free_index = *self.free_indexes.get_unchecked(i);
+                let state = self.slots.state_unchecked(free_index);
+                let new_state = occupied_state_from_empty::<ID::GenerationBits>(state);
+                self.slots.value_unchecked_mut(free_index).write(value);
+                self.slots.set_state_unchecked(free_index, new_state);
+            }
+        }
+        self.free_indexes.truncate(reused_slots_start);
+
+        // Populate any new slots we allocated above. Their states are already zero.
+        for i in 0..new_slots {
+            unsafe {
+                self.slots
+                    .value_unchecked_mut(self.slots.len + i)
+                    .write(value);
+                debug_assert_eq!(self.slots.state_unchecked(self.slots.len), 0);
+            }
+        }
+
+        self.slots.len = new_len;
+        *self.reservation_cursor.get_mut() = 0;
+    }
+
     pub fn fill_pending_reservations_with<F>(&mut self, mut new_value_fn: F)
     where
         F: FnMut() -> T,
     {
+        self.fill_pending_reservations_with_id(|_| new_value_fn());
+    }
+
+    pub fn fill_pending_reservations_with_id<F>(&mut self, mut new_value_fn: F)
+    where
+        F: FnMut(ID) -> T,
+    {
         let cursor: &mut u32 = self.reservation_cursor.get_mut();
-        let reused_slots = cmp::min(*cursor, self.free_indexes.len() as u32);
-        let reused_slots_start = self.free_indexes.len() as u32 - reused_slots;
-        let new_slots = *cursor - reused_slots;
+        let reused_slots = cmp::min(*cursor as usize, self.free_indexes.len());
+        let reused_slots_start = self.free_indexes.len() - reused_slots;
+        let new_slots = *cursor - reused_slots as u32;
         // We check for overflow in reserve_ids().
         let new_len = self.slots.len + new_slots;
 
@@ -954,15 +1001,16 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         self.slots.reserve(new_slots);
 
         // Reuse free slots.
-        for i in (reused_slots_start as usize..self.free_indexes.len()).rev() {
+        for i in (reused_slots_start..self.free_indexes.len()).rev() {
             unsafe {
                 let free_index = *self.free_indexes.get_unchecked(i);
                 let state = self.slots.state_unchecked(free_index);
                 let new_state = occupied_state_from_empty::<ID::GenerationBits>(state);
+                let new_id = ID::new_unchecked(free_index, new_state);
                 // This could panic. Do it before other writes.
                 self.slots
                     .value_unchecked_mut(free_index)
-                    .write(new_value_fn());
+                    .write(new_value_fn(new_id));
                 self.slots.set_state_unchecked(free_index, new_state);
             }
             self.free_indexes.pop();
@@ -973,10 +1021,11 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         // Populate any new slots we allocated above. Their states are already zero.
         for _ in 0..new_slots {
             unsafe {
+                let new_id = ID::new_unchecked(self.slots.len, 0);
                 // This could panic. Do it before other writes.
                 self.slots
                     .value_unchecked_mut(self.slots.len)
-                    .write(new_value_fn());
+                    .write(new_value_fn(new_id));
                 debug_assert_eq!(self.slots.state_unchecked(self.slots.len), 0);
             }
             self.slots.len += 1;
@@ -988,16 +1037,16 @@ impl<T, ID: IdTrait> Registry<T, ID> {
 
     pub fn allocate_empty_reservations(&mut self) {
         let cursor: &mut u32 = self.reservation_cursor.get_mut();
-        let reused_slots = cmp::min(*cursor, self.free_indexes.len() as u32);
-        let reused_slots_start = self.free_indexes.len() as u32 - reused_slots;
-        let new_slots = *cursor - reused_slots;
+        let reused_slots = cmp::min(*cursor as usize, self.free_indexes.len());
+        let reused_slots_start = self.free_indexes.len() - reused_slots;
+        let new_slots = *cursor - reused_slots as u32;
 
         // Pre-allocate any new slots.
         self.slots.reserve(new_slots);
 
         // Reuse free slots. We don't need to modify their states at all, just remove them from the
         // free indexes list.
-        self.free_indexes.truncate(reused_slots_start as usize);
+        self.free_indexes.truncate(reused_slots_start);
 
         // Newly allocated slots have state zero, which isn't correct for an empty reservation.
         // They need to have the retired state, so that filling them wraps the generation to zero.
