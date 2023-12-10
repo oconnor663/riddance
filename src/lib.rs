@@ -1,4 +1,5 @@
 use std::cmp;
+use std::error;
 use std::fmt;
 use std::marker::PhantomData;
 use std::mem::{self, ManuallyDrop, MaybeUninit};
@@ -52,9 +53,14 @@ fn state_is_empty<GenerationBits: Unsigned>(state: u32) -> bool {
     flag_bit_from_state::<GenerationBits>(state)
 }
 
+fn retired_state<GenerationBits: Unsigned>() -> u32 {
+    static_assert_generation_bits::<GenerationBits>();
+    u32::MAX >> (31 - GenerationBits::U32)
+}
+
 fn state_is_retired<GenerationBits: Unsigned>(state: u32) -> bool {
     debug_assert_high_state_bits_clear::<GenerationBits>(state);
-    state == (u32::MAX >> (31 - GenerationBits::U32))
+    state == retired_state::<GenerationBits>()
 }
 
 fn empty_state_from_occupied<GenerationBits: Unsigned>(occupied_state: u32) -> u32 {
@@ -723,7 +729,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         let max_generation = if state_is_occupied::<ID::GenerationBits>(state) {
             state
         } else {
-            // A pending reservation could have a generation that's one higher than its slot.
+            // A reservation has a generation that's one higher than its slot.
             generation_from_state::<ID::GenerationBits>(state).saturating_add(1)
         };
         debug_assert!(
@@ -831,8 +837,66 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         }
     }
 
+    /// Reserve an ID that doesn't exist yet. You **must** allocate pending reservations before
+    /// most other operations, see below.
+    ///
+    /// Note that this method doesn't require mutable access to the `Registry`. It uses atomics
+    /// internally, and for example you can reserve an ID while other threads are reading existing
+    /// elements.
+    ///
+    /// The new reservation is "pending", and [`contains_id`] will report `false` for the returned
+    /// ID. (Similarly [`get`] and [`get_mut`] will return `None`.) After making any number of
+    /// pending reservations, you **must** allocate them, which requires mutable access to the
+    /// `Registry`. There are two ways to allocate reservations. First, you can fill them with
+    /// values using one of the following methods, after which [`contains_id`] will report `true`:
+    ///
+    /// - [`fill_pending_reservations`]
+    /// - [`fill_pending_reservations_with`]
+    /// - [`fill_pending_reservations_with_index`]
+    ///
+    /// Alternatively, you can allocate empty reserved slots by calling
+    /// [`allocate_empty_reservations`]. In that case [`contains_id`] keeps reporting `false` for
+    /// each reserved ID until you call [`fill_empty_reservation`] on it, which you can do at any
+    /// time. You can also [`remove`] an empty reservation without filling it, in which case
+    /// further attempts to fill it will return an error. (But note that you can't [`remove`] a
+    /// _pending_ reservation.)
+    ///
+    /// The following methods will panic if there are any pending reservations:
+    ///
+    /// - [`insert`]
+    /// - [`remove`]
+    /// - [`recycle`]
+    /// - [`clone`]
+    /// - [`fill_empty_reservation`]
+    ///
+    /// [`contains_id`]: Registry::contains_id
+    /// [`get`]: Registry::get
+    /// [`get_mut`]: Registry::get_mut
+    /// [`fill_pending_reservations`]: Registry::fill_pending_reservations
+    /// [`fill_pending_reservations_with`]: Registry::fill_pending_reservations_with
+    /// [`fill_pending_reservations_with_index`]: Registry::fill_pending_reservations_with_index
+    /// [`allocate_empty_reservations`]: Registry::allocate_empty_reservations
+    /// [`insert`]: Registry::insert
+    /// [`remove`]: Registry::remove
+    /// [`recycle`]: Registry::recycle
+    /// [`clone`]: Registry::clone
+    /// [`fill_empty_reservation`]: Registry::fill_empty_reservation
     #[must_use]
-    pub fn reserve_ids(&self, count: usize) -> ReservationIter<T, ID> {
+    pub fn reserve_id(&self) -> ID {
+        self.reserve_ids(1).next().unwrap()
+    }
+
+    /// Reserve a range of IDs that don't exist yet. You **must** allocate reservations before
+    /// doing any other mutations, see [`reserve_id`].
+    ///
+    /// Note that unconsumed IDs in this iterator are _not_ returned to the `Registry` when you
+    /// drop it, and the slots they refer to are effectively leaked. If you reserved more IDs than
+    /// you need, you can save them for later, or you can [`remove`] them when you have mutable
+    /// access to the `Registry`.
+    ///
+    /// [`remove`]: Registry::reserve_id
+    #[must_use]
+    pub fn reserve_ids(&self, count: usize) -> ReservationIter<'_, T, ID> {
         let count: u32 = count.try_into().expect("capacity overflow");
         // Take the reservation with compare-exchange instead of a fetch-add, so that we can check
         // for overflow.
@@ -872,7 +936,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         }
     }
 
-    pub fn fill_reservations_with<F>(&mut self, mut new_value_fn: F)
+    pub fn fill_pending_reservations_with<F>(&mut self, mut new_value_fn: F)
     where
         F: FnMut() -> T,
     {
@@ -917,6 +981,84 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         }
         debug_assert_eq!(*cursor, 0);
         debug_assert_eq!(new_len, self.slots.len);
+    }
+
+    pub fn allocate_empty_reservations(&mut self) {
+        let cursor: &mut u32 = self.reservation_cursor.get_mut();
+        let reused_slots = cmp::min(*cursor, self.free_indexes.len() as u32);
+        let reused_slots_start = self.free_indexes.len() as u32 - reused_slots;
+        let new_slots = *cursor - reused_slots;
+
+        // Pre-allocate any new slots.
+        self.slots.reserve(new_slots);
+
+        // Reuse free slots. We don't need to modify their states at all, just remove them from the
+        // free indexes list.
+        self.free_indexes.truncate(reused_slots_start as usize);
+
+        // Newly allocated slots have state zero, which isn't correct for an empty reservation.
+        // They need to have the retired state, so that filling them wraps the generation to zero.
+        let retired_state = empty_state_from_occupied::<ID::GenerationBits>(ID::max_generation());
+        debug_assert!(state_is_retired::<ID::GenerationBits>(retired_state));
+        for i in 0..new_slots {
+            unsafe {
+                // TODO: Optimize this to memset whole u32 words.
+                self.slots
+                    .set_state_unchecked(self.slots.len + i, retired_state);
+            }
+        }
+        self.slots.len += new_slots;
+        *cursor = 0;
+    }
+
+    ///
+    ///
+    /// # Leaks
+    ///
+    /// Violating this rule may lead to memory leaks. There's currently one edge case that triggers
+    /// this:
+    ///
+    /// 1. Reserve an ID with [`reserve_ids`].
+    /// 1. Reserve an ID with [`reserve_ids`].
+    pub fn fill_empty_reservation(
+        &mut self,
+        id: ID,
+        value: T,
+    ) -> Result<(), FillEmptyReservationError<T>> {
+        assert_eq!(*self.reservation_cursor.get_mut(), 0, "pending reservation");
+        self.debug_best_effort_checks_for_contract_violations(id);
+        let error_kind;
+        if let Some(state) = self.slots.state(id.index()) {
+            let expected_generation = if id.generation() == 0 {
+                ID::max_generation()
+            } else {
+                id.generation() - 1
+            };
+            let reserved_state =
+                empty_state_from_occupied::<ID::GenerationBits>(expected_generation);
+            if state == reserved_state {
+                // Happy path: the reservation is valid.
+                unsafe {
+                    self.slots.set_state_unchecked(id.index(), id.generation());
+                    self.slots.value_unchecked_mut(id.index()).write(value);
+                }
+                return Ok(());
+            }
+            let state_generation = generation_from_state::<ID::GenerationBits>(state);
+            if state == id.generation() {
+                error_kind = FillEmptyReservationErrorKind::Exists;
+            } else if state_generation >= id.generation() {
+                error_kind = FillEmptyReservationErrorKind::Dangling;
+            } else {
+                error_kind = FillEmptyReservationErrorKind::GenerationTooNew;
+            }
+        } else {
+            error_kind = FillEmptyReservationErrorKind::IndexOutOfBounds;
+        }
+        Err(FillEmptyReservationError {
+            inner: value,
+            kind: error_kind,
+        })
     }
 
     /// Mark all retired slots as free. You **must** delete all dangling IDs (or replace them with
@@ -1023,11 +1165,77 @@ impl<'registry, T, ID: IdTrait> Iterator for ReservationIter<'registry, T, ID> {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum FillEmptyReservationErrorKind {
+    Exists,
+    Dangling,
+    GenerationTooNew,
+    IndexOutOfBounds,
+}
+
+#[derive(Copy, Clone)]
+pub struct FillEmptyReservationError<T> {
+    kind: FillEmptyReservationErrorKind,
+    inner: T,
+}
+
+impl<T> FillEmptyReservationError<T> {
+    pub fn into_inner(self) -> T {
+        self.inner
+    }
+}
+
+impl<T> fmt::Debug for FillEmptyReservationError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("FillEmptyReservationError")
+            .field("kind", &self.kind)
+            .finish()
+    }
+}
+
+impl<T> fmt::Display for FillEmptyReservationError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let message = match self.kind {
+            FillEmptyReservationErrorKind::Exists => "entry with this ID already exists",
+            FillEmptyReservationErrorKind::Dangling => "this ID has been removed",
+            FillEmptyReservationErrorKind::GenerationTooNew => {
+                "ID generation too new (dangling ID retained across recycle?)"
+            }
+            FillEmptyReservationErrorKind::IndexOutOfBounds => "ID index out of bounds",
+        };
+        write!(f, "{}", message)
+    }
+}
+
+impl<T> error::Error for FillEmptyReservationError<T> {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::num::NonZeroU8;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic;
+
+    #[track_caller]
+    fn should_panic<T>(f: impl FnOnce() -> T) {
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(f));
+        assert!(result.is_err(), "panic expected but missing");
+        println!("↑↑↑↑↑ expected panic ↑↑↑↑↑\n");
+    }
+
+    #[test]
+    fn test_state_helpers() {
+        for state in 0..8 {
+            if state < 4 {
+                assert!(state_is_occupied::<typenum::U2>(state));
+            } else {
+                assert!(state_is_empty::<typenum::U2>(state));
+            }
+            assert_eq!(state_is_retired::<typenum::U2>(state), state == 0b111);
+        }
+
+        #[cfg(debug_assertions)]
+        should_panic(|| debug_assert_high_state_bits_clear::<typenum::U2>(8));
+    }
 
     #[repr(transparent)]
     pub struct Id8<T, const GENERATION_BITS: usize>(
@@ -1118,13 +1326,12 @@ mod tests {
         let registry1 = Registry::new();
         let mut registry2 = Registry::new();
         let id = registry2.insert(());
-        let result = catch_unwind(|| registry1.contains_id(id));
         if cfg!(debug_assertions) {
             // In debug mode, we detect the contract violation and panic.
-            result.unwrap_err();
+            should_panic(|| registry1.contains_id(id));
         } else {
             // In release mode, we don't check for contract violations.
-            assert_eq!(result.unwrap(), false);
+            assert!(!registry1.contains_id(id));
         }
     }
 
@@ -1154,13 +1361,12 @@ mod tests {
         // Looking up id1 gives a false positive.
         assert!(registry.contains_id(id1));
         // Looking up id2 panics in debug mode.
-        let id2_result = catch_unwind(|| registry.contains_id(id2));
         if cfg!(debug_assertions) {
             // In debug mode, we detect the contract violation and panic.
-            id2_result.unwrap_err();
+            should_panic(|| registry.contains_id(id2));
         } else {
             // In release mode, we don't check for contract violations.
-            assert_eq!(id2_result.unwrap(), false);
+            assert!(!registry.contains_id(id2));
         }
     }
 
@@ -1404,10 +1610,11 @@ mod tests {
         registry.get_mut(null);
 
         // These methods do panic.
-        catch_unwind(AssertUnwindSafe(|| registry.insert(String::new()))).unwrap_err();
-        catch_unwind(AssertUnwindSafe(|| registry.remove(null))).unwrap_err();
-        catch_unwind(AssertUnwindSafe(|| registry.recycle())).unwrap_err();
-        catch_unwind(AssertUnwindSafe(|| registry.clone())).unwrap_err();
+        should_panic(|| registry.insert(String::new()));
+        should_panic(|| registry.remove(null));
+        should_panic(|| registry.recycle());
+        should_panic(|| registry.clone());
+        should_panic(|| registry.fill_empty_reservation(null, "foo".into()));
     }
 
     #[test]
@@ -1440,10 +1647,101 @@ mod tests {
         assert_eq!(registry.get(id1).unwrap(), "old");
         assert!(registry.get(id2).is_none());
         assert!(registry.get(id3).is_none());
-        registry.fill_reservations_with(|| "new".into());
+        registry.fill_pending_reservations_with(|| "new".into());
         assert_eq!(registry.get(id0).unwrap(), "new");
         assert_eq!(registry.get(id1).unwrap(), "old");
         assert_eq!(registry.get(id2).unwrap(), "new");
         assert_eq!(registry.get(id3).unwrap(), "new");
+    }
+
+    #[test]
+    fn test_empty_reservations() {
+        let mut registry = Registry::<String>::new();
+        let id0_old = registry.insert("old".into());
+        let id1 = registry.insert("old".into());
+        registry.remove(id0_old);
+        assert!(!registry.contains_id(id0_old));
+        assert!(registry.contains_id(id1));
+
+        // Reserve a couple of IDs individually.
+        let id0 = registry.reserve_id();
+        assert_eq!(id0.index(), 0);
+        assert_eq!(id0.generation(), 1);
+        assert!(!registry.contains_id(id0));
+        let id2 = registry.reserve_id();
+        assert_eq!(id2.index(), 2);
+        assert_eq!(id2.generation(), 0);
+        assert!(!registry.contains_id(id2));
+
+        // Now there are pending reservations, and methods like insert will panic. See also
+        // test_pending_reservation_panics.
+        should_panic(|| registry.insert(String::new()));
+
+        // Allocate empty slots for those IDs.
+        registry.allocate_empty_reservations();
+        assert!(!registry.contains_id(id0));
+        assert!(!registry.contains_id(id2));
+
+        // Now there are no pending reservations, and a regular insert can succeed.
+        let id3 = registry.insert("new".into());
+        assert!(registry.contains_id(id3));
+
+        // Fill the empty slots.
+        registry.fill_empty_reservation(id0, "new".into()).unwrap();
+        assert!(registry.contains_id(id0));
+        assert!(!registry.contains_id(id2));
+        registry.fill_empty_reservation(id2, "new".into()).unwrap();
+        assert!(registry.contains_id(id0));
+        assert!(registry.contains_id(id2));
+
+        // Trying to fill IDs that aren't reserved should fail.
+        let error = registry
+            .fill_empty_reservation(id0_old, "blarg".into())
+            .unwrap_err();
+        assert_eq!(error.kind, FillEmptyReservationErrorKind::Dangling);
+        for id in [id0, id1, id2, id3] {
+            let error = registry
+                .fill_empty_reservation(id, "blarg".into())
+                .unwrap_err();
+            assert_eq!(error.kind, FillEmptyReservationErrorKind::Exists);
+            assert_eq!(error.into_inner(), "blarg");
+        }
+        registry.remove(id0);
+        dbg!(id0.generation());
+        let error = registry
+            .fill_empty_reservation(id0, "blarg".into())
+            .unwrap_err();
+        assert_eq!(error.kind, FillEmptyReservationErrorKind::Dangling);
+
+        // The following cases trip debug assertions before returning an error, so we only run them
+        // in release mode.
+        #[cfg(not(debug_assertions))]
+        {
+            // An ID with a generation that's newer than its slot (and not a reservation for that
+            // slot) can only be produced by retaining a dangling ID across a call to recycle, or
+            // by handcrafting a bad ID. Here we do it by hancrafting.
+
+            // For an empty slot, generation + 1 is a valid reservation. Test +2 here.
+            let too_new_id = Id::new(id0.index(), id0.generation() + 2).unwrap();
+            let error = registry
+                .fill_empty_reservation(too_new_id, "blarg".into())
+                .unwrap_err();
+            assert_eq!(error.kind, FillEmptyReservationErrorKind::GenerationTooNew);
+
+            // For an occupied slot, generation + 1 should be impossible.
+            let too_new_id = Id::new(id1.index(), id1.generation() + 1).unwrap();
+            let error = registry
+                .fill_empty_reservation(too_new_id, "blarg".into())
+                .unwrap_err();
+            assert_eq!(error.kind, FillEmptyReservationErrorKind::GenerationTooNew);
+
+            // An ID with an out-of-bounds index should never be possible other than by
+            // handcrafting it.
+            let out_of_bounds_id = Id::new(id3.index() + 1, 0).unwrap();
+            let error = registry
+                .fill_empty_reservation(out_of_bounds_id, "blarg".into())
+                .unwrap_err();
+            assert_eq!(error.kind, FillEmptyReservationErrorKind::IndexOutOfBounds);
+        }
     }
 }
