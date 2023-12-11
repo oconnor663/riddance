@@ -517,3 +517,50 @@ fn test_fill_pending_reservations_with_id() {
         assert_eq!(id, registry[id]);
     }
 }
+
+#[test]
+fn test_iteration() {
+    let mut registry = Registry::new();
+    let id0 = registry.insert(String::from("foo"));
+    let id1 = registry.insert(String::from("bar"));
+    let id2 = registry.insert(String::from("baz"));
+    registry.remove(id0);
+    registry.remove(id2);
+    assert_eq!(registry.iter().count(), 1);
+    assert_eq!(registry.iter_mut().count(), 1);
+    assert_eq!(registry.clone().into_iter().count(), 1);
+    assert_eq!(registry.ids().count(), 1);
+    assert_eq!(registry.values().count(), 1);
+    assert_eq!(registry.values_mut().count(), 1);
+    assert_eq!(registry.clone().into_values().count(), 1);
+    for (id, s) in &registry {
+        assert_eq!(id, id1);
+        assert_eq!(s, "bar");
+    }
+    for id in registry.ids() {
+        assert_eq!(id, id1);
+    }
+    for s in registry.values() {
+        assert_eq!(s, "bar");
+    }
+    for (id, s) in &mut registry {
+        assert_eq!(id, id1);
+        assert_eq!(s, "bar");
+        *s += "bar";
+    }
+    for s in registry.values_mut() {
+        assert_eq!(s, "barbar");
+        *s += "bar";
+    }
+    // This helper fn is mostly just to assert the type.
+    let drop_string = |s: String| drop(s);
+    for (id, s) in registry.clone() {
+        assert_eq!(id, id1);
+        assert_eq!(s, "barbarbar");
+        drop_string(s);
+    }
+    for s in registry.into_values() {
+        assert_eq!(s, "barbarbar");
+        drop_string(s);
+    }
+}

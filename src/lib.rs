@@ -1,5 +1,5 @@
-//! Riddance provides the general-purpose [`Registry`] container, which stores objects and issues
-//! unique IDs for them, also known as a "slot map" or an "arena". Features include:
+//! Riddance provides the [`Registry`] container, which stores objects and issues unique IDs for
+//! them, also known as a "slot map" or an "arena". Features include:
 //!
 //! - New IDs can be "reserved" atomically, without locking the [`Registry`]. See [`reserve_id`]
 //!   and [`reserve_ids`].
@@ -467,7 +467,7 @@ where
     }
 }
 
-/// the default 64-bit ID type
+/// The default 64-bit ID type.
 ///
 /// This ID type has 32 index bits and 31 generation bits (not 32, because the [`Registry`] needs an
 /// extra bit to mark free slots). That's enough for 4 billion elements and a retirement rate of
@@ -483,7 +483,8 @@ where
 /// [`Id32`]: id::Id32
 pub type Id<T> = id::Id64<T>;
 
-/// The central data structure in this crate, which issues IDs and maps them to stored values.
+/// A container that issues IDs and maps them to stored values, also called a "slot map" or an
+/// "arena".
 pub struct Registry<T, ID: IdTrait = Id<T>> {
     slots: Slots<T, ID::GenerationBits>,
     free_indexes: Vec<u32>,
@@ -953,6 +954,54 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         assert_eq!(*self.reservation_cursor.get_mut(), 0, "pending reservation");
         // This clears retired_indexes.
         self.free_indexes.append(&mut self.retired_indexes);
+    }
+
+    /// Iterate over `(ID, &T)`. Equivalent to iterating over `&Registry`.
+    pub fn iter(&self) -> iter::Iter<'_, T, ID> {
+        iter::Iter {
+            registry: self,
+            index: 0,
+        }
+    }
+
+    /// Iterate over `(ID, &mut T)`. Equivalent to iterating over `&mut Registry`.
+    pub fn iter_mut(&mut self) -> iter::IterMut<'_, T, ID> {
+        iter::IterMut {
+            registry: self,
+            index: 0,
+        }
+    }
+
+    /// Iterate over `(ID, T)`. Equivalent to iterating over `Registry`.
+    pub fn into_iter(self) -> iter::IntoIter<T, ID> {
+        iter::IntoIter {
+            registry: self,
+            index: 0,
+        }
+    }
+
+    /// Iterate over `ID`.
+    pub fn ids(&self) -> iter::Ids<'_, T, ID> {
+        iter::Ids { inner: self.iter() }
+    }
+
+    /// Iterate over `&T`.
+    pub fn values(&self) -> iter::Values<'_, T, ID> {
+        iter::Values { inner: self.iter() }
+    }
+
+    /// Iterate over `&mut T`.
+    pub fn values_mut(&mut self) -> iter::ValuesMut<'_, T, ID> {
+        iter::ValuesMut {
+            inner: self.iter_mut(),
+        }
+    }
+
+    /// Iterate over `T`.
+    pub fn into_values(self) -> iter::IntoValues<T, ID> {
+        iter::IntoValues {
+            inner: self.into_iter(),
+        }
     }
 }
 
