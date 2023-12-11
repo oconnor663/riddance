@@ -1,4 +1,5 @@
 use super::*;
+use crate::error::FillEmptyReservationErrorKind;
 use crate::id::{Id32, Id64, Id8};
 use std::panic;
 

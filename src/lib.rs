@@ -1,5 +1,4 @@
 use std::cmp;
-use std::error;
 use std::fmt;
 use std::marker::PhantomData;
 use std::mem::{self, ManuallyDrop, MaybeUninit};
@@ -7,12 +6,14 @@ use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use typenum::Unsigned;
 
-use id::IdTrait;
-
+pub mod error;
 pub mod id;
+pub mod iter;
 
 #[cfg(test)]
 mod test;
+
+use id::IdTrait;
 
 // These "static" asserts will get compiled out in any case we care about. Someday we'll be able to
 // actually enforce these bounds statically.
@@ -714,7 +715,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     /// [`reserve_id`]: Registry::reserve_id
     /// [`remove`]: Registry::remove
     #[must_use]
-    pub fn reserve_ids(&self, count: usize) -> ReservationIter<'_, T, ID> {
+    pub fn reserve_ids(&self, count: usize) -> iter::ReservationIter<'_, T, ID> {
         let count: u32 = count.try_into().expect("capacity overflow");
         // Take the reservation with compare-exchange instead of a fetch-add, so that we can check
         // for overflow.
@@ -742,7 +743,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
             match result {
                 // success
                 Ok(_) => {
-                    return ReservationIter {
+                    return iter::ReservationIter {
                         registry: self,
                         start,
                         end,
@@ -839,7 +840,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         &mut self,
         id: ID,
         value: T,
-    ) -> Result<(), FillEmptyReservationError<T>> {
+    ) -> Result<(), error::FillEmptyReservationError<T>> {
         assert_eq!(*self.reservation_cursor.get_mut(), 0, "pending reservation");
         self.debug_best_effort_checks_for_contract_violations(id);
         let error_kind;
@@ -861,16 +862,16 @@ impl<T, ID: IdTrait> Registry<T, ID> {
             }
             let state_generation = generation_from_state::<ID::GenerationBits>(state);
             if state == id.generation() {
-                error_kind = FillEmptyReservationErrorKind::Exists;
+                error_kind = error::FillEmptyReservationErrorKind::Exists;
             } else if state_generation >= id.generation() {
-                error_kind = FillEmptyReservationErrorKind::Dangling;
+                error_kind = error::FillEmptyReservationErrorKind::Dangling;
             } else {
-                error_kind = FillEmptyReservationErrorKind::GenerationTooNew;
+                error_kind = error::FillEmptyReservationErrorKind::GenerationTooNew;
             }
         } else {
-            error_kind = FillEmptyReservationErrorKind::IndexOutOfBounds;
+            error_kind = error::FillEmptyReservationErrorKind::IndexOutOfBounds;
         }
-        Err(FillEmptyReservationError {
+        Err(error::FillEmptyReservationError {
             inner: value,
             kind: error_kind,
         })
@@ -943,83 +944,3 @@ impl<T, ID: IdTrait> std::ops::IndexMut<ID> for Registry<T, ID> {
         self.get_mut(id).unwrap()
     }
 }
-
-pub struct ReservationIter<'registry, T, ID: IdTrait = Id<T>> {
-    registry: &'registry Registry<T, ID>,
-    // Note that these bounds are positions in (or beyond) the free list, not slot indexes.
-    start: u32,
-    end: u32,
-}
-
-impl<'registry, T, ID: IdTrait> Iterator for ReservationIter<'registry, T, ID> {
-    type Item = ID;
-
-    fn next(&mut self) -> Option<ID> {
-        if self.start < self.end {
-            let id = unsafe {
-                if (self.start as usize) < self.registry.free_indexes.len() {
-                    let index = *self
-                        .registry
-                        .free_indexes
-                        .get_unchecked(self.start as usize);
-                    let state = self.registry.slots.state_unchecked(self.start);
-                    let generation = occupied_state_from_empty::<ID::GenerationBits>(state);
-                    ID::new_unchecked(index, generation)
-                } else {
-                    let index = self.registry.slots.len
-                        + (self.start - self.registry.free_indexes.len() as u32);
-                    // reserve_ids checked that these indexes won't exceed ID::max_len.
-                    ID::new_unchecked(index, 0)
-                }
-            };
-            self.start += 1;
-            Some(id)
-        } else {
-            None
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum FillEmptyReservationErrorKind {
-    Exists,
-    Dangling,
-    GenerationTooNew,
-    IndexOutOfBounds,
-}
-
-#[derive(Copy, Clone)]
-pub struct FillEmptyReservationError<T> {
-    kind: FillEmptyReservationErrorKind,
-    inner: T,
-}
-
-impl<T> FillEmptyReservationError<T> {
-    pub fn into_inner(self) -> T {
-        self.inner
-    }
-}
-
-impl<T> fmt::Debug for FillEmptyReservationError<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("FillEmptyReservationError")
-            .field("kind", &self.kind)
-            .finish()
-    }
-}
-
-impl<T> fmt::Display for FillEmptyReservationError<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let message = match self.kind {
-            FillEmptyReservationErrorKind::Exists => "entry with this ID already exists",
-            FillEmptyReservationErrorKind::Dangling => "this ID has been removed",
-            FillEmptyReservationErrorKind::GenerationTooNew => {
-                "ID generation too new (dangling ID retained across recycle?)"
-            }
-            FillEmptyReservationErrorKind::IndexOutOfBounds => "ID index out of bounds",
-        };
-        write!(f, "{}", message)
-    }
-}
-
-impl<T> error::Error for FillEmptyReservationError<T> {}
