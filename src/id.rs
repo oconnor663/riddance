@@ -173,7 +173,7 @@ impl<T> Ord for Id64<T> {
 /// }
 ///
 /// // GENERATION_BITS = 12, which allows up to 2^20 ≈ 1 million possible elements.
-/// type PersonId = Id32<Person, 10>;
+/// type PersonId = Id32<Person, 12>;
 ///
 /// let mut people = Registry::<Person, PersonId>::with_id_type();
 /// let alice_id = people.insert(Person { name: "Alice".into(), friends: vec![] });

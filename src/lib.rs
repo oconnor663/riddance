@@ -511,6 +511,19 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     /// Construct a new, empty `Registry<T>` with a custom ID type.
     ///
     /// The registry will not allocate until elements are inserted into it.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use riddance::{Id, Registry};
+    ///
+    /// type TypeErasedId = Id<()>;
+    ///
+    /// # fn main() {
+    /// let mut registry: Registry::<String, TypeErasedId> = Registry::with_id_type();
+    /// let id: TypeErasedId = registry.insert(String::from("foo"));
+    /// # }
+    /// ```
     pub fn with_id_type() -> Self {
         Self::with_id_type_and_capacity(0)
     }
@@ -674,6 +687,19 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         unsafe { self.insert_into_new_slot(|_| value) }
     }
 
+    /// If `id` refers to an element in the registry, remove the element and return it.
+    ///
+    /// This method returns `Some` if any only if [`contains_id`] would have returned `true`. After
+    /// calling `remove` on an ID, that ID and any copies of it become "dangling". [`contains_id`]
+    /// will return `false`, and [`get`], [`get_mut`], and any further calls to `remove` will
+    /// return `None`.
+    ///
+    /// See also [`recycle`].
+    ///
+    /// [`contains_id`]: Registry::contains_id
+    /// [`get`]: Registry::get
+    /// [`get_mut`]: Registry::get_mut
+    /// [`recycle`]: Registry::recycle
     pub fn remove(&mut self, id: ID) -> Option<T> {
         assert_eq!(*self.reservation_cursor.get_mut(), 0, "pending reservation");
         self.debug_best_effort_checks_for_contract_violations(id);
@@ -924,31 +950,29 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         })
     }
 
-    /// Mark all retired slots as free. You **must** delete all dangling IDs (or replace them with
-    /// [`null`]) before calling this function.
+    /// Mark all retired slots as free, making them available for future insertions and
+    /// reservations. Dangling IDs (that is, IDs passed to [`remove`]) from before the call to
+    /// `recycle` **must not** be used again with any method on this `Registry`. Generally callers
+    /// should delete all dangling IDs (or replace them with [`null`]) before calling `recycle`.
     ///
-    /// When you call [`remove`] Registry::remove on an ID, that ID and any copies of it become
-    /// "dangling". Calling [`get`] or [`get_mut`] on a dangling ID is normally guaranteed to
-    /// return `None`, and [`contains_id`] is normally guaranteed to return `false`. To provide
-    /// these guarantees, `Registry` "retires" a slot when its generation reaches the maximum.
-    ///
-    /// When you call `recycle`, all of these retired slots are made available for new insertions,
-    /// and their generation starts back over at 0. If you retain any dangling IDs across the call
-    /// to `retire`, they could collide with newly issued IDs, and calls to [`get`], [`get_mut`],
-    /// and [`contains_id`] can return confusing results. This behavior is memory-safe, but it's a
-    /// logic error, similar to the logic errors that can arise if you modify a key after it's been
-    /// inserted into a [`HashMap`].
+    /// If you retain dangling IDs across a call to `recycle`, they can collide with newly issued
+    /// IDs, and calls to [`get`], [`get_mut`], and [`contains_id`] can return confusing results.
+    /// Calling [`fill_empty_reservation`] on these IDs can also lead to memory leaks. This
+    /// behavior is memory-safe, but these are logic bugs, similar to the logic bugs that can arise
+    /// if you modify a key after it's been inserted into a [`HashMap`].
     ///
     /// # Panics
     ///
-    /// `Registry` makes a best effort to detect violations of this rule. _Any_ method on
+    /// `Registry` makes a best effort to detect violations of this rule. **Any** method on
     /// `Registry` may panic if it sees an ID generation that's newer than the corresponding slot.
+    /// These checks are currently only done in debug mode, but this is not guaranteed.
     ///
     /// [`null`]: IdTrait::null
     /// [`remove`]: Registry::remove
     /// [`get`]: Registry::get
     /// [`get_mut`]: Registry::get_mut
     /// [`contains_id`]: Registry::contains_id
+    /// [`fill_empty_reservation`]: Registry::fill_empty_reservation
     /// [`HashMap`]: https://doc.rust-lang.org/std/collections/struct.HashMap.html
     pub fn recycle(&mut self) {
         assert_eq!(*self.reservation_cursor.get_mut(), 0, "pending reservation");
