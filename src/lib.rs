@@ -484,7 +484,6 @@ where
 pub type Id<T> = id::Id64<T>;
 
 /// The central data structure in this crate, which issues IDs and maps them to stored values.
-#[derive(Debug)]
 pub struct Registry<T, ID: IdTrait = Id<T>> {
     slots: Slots<T, ID::GenerationBits>,
     free_indexes: Vec<u32>,
@@ -989,5 +988,20 @@ impl<T, ID: IdTrait> std::ops::Index<ID> for Registry<T, ID> {
 impl<T, ID: IdTrait> std::ops::IndexMut<ID> for Registry<T, ID> {
     fn index_mut(&mut self, id: ID) -> &mut T {
         self.get_mut(id).unwrap()
+    }
+}
+
+// TODO: Figure out how to derive this. Currently typenum bounds get in the way.
+impl<T, ID: IdTrait> fmt::Debug for Registry<T, ID>
+where
+    T: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        f.debug_struct("Registry")
+            .field("slots", &self.slots)
+            .field("free_indexes", &self.free_indexes)
+            .field("retired_indexes", &self.retired_indexes)
+            .field("reservation_cursor", &self.reservation_cursor)
+            .finish()
     }
 }
