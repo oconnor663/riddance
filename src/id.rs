@@ -153,12 +153,39 @@ impl<T> Ord for Id64<T> {
 /// A smaller ID type for caller who want to save space.
 ///
 /// Using this ID type requires picking a value for the `GENERATION_BITS` const parameter, which
-/// must be between 0 and 31 inclusive. Choosing 0 means that any removed IDs are immediately
-/// retired (see [`recycle`](crate::Registry::recycle)). Choosing 31 means that the only possible
-/// ID is the [`null`](IdTrait::null) ID, and any call to [`insert`](crate::Registry::insert) will
-/// panic. Most callers will probably want value in the middle like 10 or 12, but in general the
+/// must be between 0 and 31 inclusive. The number of index bits is 32 minus `GENERATION_BITS`.
+/// Setting `GENERATION_BITS` to 0 means that any removed IDs are immediately retired (see
+/// [`recycle`](crate::Registry::recycle)). Setting it 31 means that the only possible ID is the
+/// [`null`](IdTrait::null) ID, and any call to [`insert`](crate::Registry::insert) will panic.
+/// Most callers will probably want value in the middle like 10 or 12, but in general the
 /// expectation is that you're using this ID type because you know exactly what your application
 /// needs, and who am I to tell you what to do?
+///
+/// # Example
+///
+/// ```
+/// # fn main() {
+/// use riddance::{id::Id32, Registry};
+///
+/// struct Person {
+///     name: String,
+///     friends: Vec<PersonId>,
+/// }
+///
+/// // GENERATION_BITS = 12, which allows up to 2^20 ≈ 1 million possible elements.
+/// type PersonId = Id32<Person, 10>;
+///
+/// let mut people = Registry::<Person, PersonId>::with_id_type();
+/// let alice_id = people.insert(Person { name: "Alice".into(), friends: vec![] });
+/// let bob_id = people.insert(Person { name: "Bob".into(), friends: vec![] });
+/// people[alice_id].friends.push(bob_id);
+/// people[bob_id].friends.push(alice_id);
+///
+/// people.remove(bob_id);
+/// assert!(people.get(alice_id).is_some());
+/// assert!(people.get(bob_id).is_none());
+/// # }
+/// ```
 // Note that we can't use #[derive(...)] for common traits here, because for example Id should be
 // Copy and Ord and Eq even when T isn't. See https://github.com/rust-lang/rust/issues/108894.
 #[repr(transparent)]

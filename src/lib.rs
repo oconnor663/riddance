@@ -1,17 +1,43 @@
-//! A general-purpose [`Registry`] container, which stores objects and issues unique IDs for them.
-//! also known as a "slot map" or an "arena". Features include:
+//! Riddance provides the general-purpose [`Registry`] container, which stores objects and issues
+//! unique IDs for them, also known as a "slot map" or an "arena". Features include:
 //!
-//! - New IDs can be "reserved" atomically, without locking the [`Registry`]. See [`reserve_id`].
+//! - New IDs can be "reserved" atomically, without locking the [`Registry`]. See [`reserve_id`]
+//!   and [`reserve_ids`].
 //! - When the generation of a slot reaches its maximum, the slot is "retired" instead of allowing
 //!   the generation to roll over to zero. This prevents logic errors from colliding IDs.
 //! - The default [`Id`] type is 64 bits, but callers that need smallers IDs can use [`Id32`],
 //!   which has a configurable number of generation bits.
 //! - The [`recycle`] method makes it possible to reuse previously retired slots, though it can
-//!   reintroduce logic errors if you violate its contract.
+//!   introduce logic errors if you violate its contract. It's mainly intended for callers who use
+//!   [`Id32`].
 //! - By default ID types incorporate the `T` type parameter of the `Registry` that created them,
 //!   to avoid confusing IDs from different registries.
 //!
+//! # Example
+//!
+//! ```
+//! # fn main() {
+//! use riddance::{Id, Registry};
+//!
+//! struct Person {
+//!     name: String,
+//!     friends: Vec<Id<Person>>,
+//! }
+//!
+//! let mut people = Registry::new();
+//! let alice_id = people.insert(Person { name: "Alice".into(), friends: vec![] });
+//! let bob_id = people.insert(Person { name: "Bob".into(), friends: vec![] });
+//! people[alice_id].friends.push(bob_id);
+//! people[bob_id].friends.push(alice_id);
+//!
+//! people.remove(bob_id);
+//! assert!(people.get(alice_id).is_some());
+//! assert!(people.get(bob_id).is_none());
+//! # }
+//! ```
+//!
 //! [`reserve_id`]: Registry::reserve_id
+//! [`reserve_ids`]: Registry::reserve_ids
 //! [`Id32`]: id::Id32
 //! [`recycle`]: Registry::recycle
 
@@ -705,6 +731,8 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     /// - [`clone`]
     /// - [`fill_empty_reservation`]
     ///
+    /// See also [`reserve_ids`].
+    ///
     /// [`contains_id`]: Registry::contains_id
     /// [`get`]: Registry::get
     /// [`get_mut`]: Registry::get_mut
@@ -717,6 +745,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     /// [`recycle`]: Registry::recycle
     /// [`clone`]: Registry::clone
     /// [`fill_empty_reservation`]: Registry::fill_empty_reservation
+    /// [`reserve_ids`]: Registry::reserve_ids
     #[must_use]
     pub fn reserve_id(&self) -> ID {
         self.reserve_ids(1).next().unwrap()
