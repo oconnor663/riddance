@@ -1,5 +1,5 @@
 use super::*;
-use std::num::NonZeroU8;
+use crate::id::{Id32, Id64, Id8};
 use std::panic;
 
 #[track_caller]
@@ -22,55 +22,6 @@ fn test_state_helpers() {
 
     #[cfg(debug_assertions)]
     should_panic(|| debug_assert_high_state_bits_clear::<typenum::U2>(8));
-}
-
-#[repr(transparent)]
-pub struct Id8<T, const GENERATION_BITS: usize>(
-    NonZeroU8,
-    // https://doc.rust-lang.org/nomicon/phantom-data.html#table-of-phantomdata-patterns
-    PhantomData<fn() -> T>,
-);
-
-impl<T, const GENERATION_BITS: usize> IdTrait for Id8<T, GENERATION_BITS>
-where
-    typenum::Const<GENERATION_BITS>: typenum::ToUInt,
-    typenum::U<GENERATION_BITS>: Unsigned,
-    typenum::U8: std::ops::Sub<typenum::U<GENERATION_BITS>>,
-    <typenum::U8 as std::ops::Sub<typenum::U<GENERATION_BITS>>>::Output: Unsigned,
-{
-    type IndexBits = typenum::Diff<typenum::U8, typenum::U<GENERATION_BITS>>;
-    type GenerationBits = typenum::U<GENERATION_BITS>;
-
-    unsafe fn new_unchecked(index: u32, generation: u32) -> Self {
-        let data = ((index as u8) << GENERATION_BITS) | generation as u8;
-        unsafe {
-            Self(
-                // Note that adding 1 here makes data=u8::MAX unrepresentable, rather than data=0.
-                NonZeroU8::new_unchecked(data + 1),
-                PhantomData,
-            )
-        }
-    }
-
-    fn index(&self) -> u32 {
-        // Note that subtracting 1 here makes data=u8::MAX unrepresentable, rather than data=0.
-        let data = (self.0.get() - 1) as u32;
-        data >> GENERATION_BITS
-    }
-
-    fn generation(&self) -> u32 {
-        // Note that subtracting 1 here makes data=u8::MAX unrepresentable, rather than data=0.
-        let data = (self.0.get() - 1) as u32;
-        data & !(u32::MAX << GENERATION_BITS)
-    }
-}
-
-impl<T, const GENERATION_BITS: usize> Copy for Id8<T, GENERATION_BITS> {}
-
-impl<T, const GENERATION_BITS: usize> Clone for Id8<T, GENERATION_BITS> {
-    fn clone(&self) -> Self {
-        Self(self.0, PhantomData)
-    }
 }
 
 #[test]
