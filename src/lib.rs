@@ -424,6 +424,19 @@ where
 }
 
 /// the default 64-bit ID type
+///
+/// This ID type has 32 index bits and 31 generation bits (not 32, because the [`Registry`] needs an
+/// extra bit to mark free slots). That's enough for 4 billion elements and a retirement rate of
+/// one slot for every 2 billion removals. Most callers using this default ID type don't need to
+/// worry about these limits and don't need to call [`recycle`].
+///
+/// Callers with very high performance requirements, for whom the difference between 64-bit IDs and
+/// 32-bit IDs matters, can consider using [`Id32`] instead. That type uses a configurable number
+/// of generation bits, and you have to think carefully about how many index bits you'll need and
+/// whether you'll need to [`recycle`].
+///
+/// [`recycle`]: Registry::recycle
+/// [`Id32`]: id::Id32
 pub type Id<T> = id::Id64<T>;
 
 #[derive(Debug)]
@@ -620,22 +633,23 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     /// internally, and for example you can reserve an ID while other threads are reading existing
     /// elements.
     ///
-    /// The new reservation is "pending", and [`contains_id`] will report `false` for the returned
-    /// ID. (Similarly [`get`] and [`get_mut`] will return `None`.) After making any number of
-    /// pending reservations, you **must** allocate them, which requires mutable access to the
-    /// `Registry`. There are two ways to allocate reservations. First, you can fill them with
-    /// values using one of the following methods, after which [`contains_id`] will report `true`:
+    /// The new reservation is "pending", and [`contains_id`] will report `false` for the reserved
+    /// ID. Similarly, [`get`] and [`get_mut`] will return `None`. After making any number of
+    /// pending reservations, you **must** allocate them. There are two ways to allocate
+    /// reservations, both of which require mutable access to the registry. First, you can fill
+    /// them with values using one of the following methods, after which [`contains_id`] will
+    /// report `true`:
     ///
     /// - [`fill_pending_reservations`]
     /// - [`fill_pending_reservations_with`]
     /// - [`fill_pending_reservations_with_id`]
     ///
-    /// Alternatively, you can allocate empty reserved slots by calling
-    /// [`allocate_empty_reservations`]. In that case [`contains_id`] keeps reporting `false` for
+    /// Alternatively, you can allocate (or potentially reuse) empty reserved slots by calling
+    /// [`allocate_empty_reservations`]. In that case [`contains_id`] still reports `false` for
     /// each reserved ID until you call [`fill_empty_reservation`] on it, which you can do at any
     /// time. You can also [`remove`] an empty reservation without filling it, in which case
     /// further attempts to fill it will return an error. (But note that you can't [`remove`] a
-    /// _pending_ reservation.)
+    /// _pending_ reservation. See immediately below.)
     ///
     /// The following methods will panic if there are any pending reservations:
     ///
@@ -670,7 +684,8 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     /// you need, you can save them for later, or you can [`remove`] them when you have mutable
     /// access to the `Registry`.
     ///
-    /// [`remove`]: Registry::reserve_id
+    /// [`reserve_id`]: Registry::reserve_id
+    /// [`remove`]: Registry::remove
     #[must_use]
     pub fn reserve_ids(&self, count: usize) -> ReservationIter<'_, T, ID> {
         let count: u32 = count.try_into().expect("capacity overflow");
@@ -836,15 +851,18 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         *cursor = 0;
     }
 
+    /// Provide a value for one empty reservation. This is used together with
+    /// [`allocate_empty_reservations`].
     ///
+    /// Empty reservations can be filled in any order. You can also [`remove`] a reserved ID
+    /// without ever filling it. But note that you can't [`remove`] a _pending_ reservation,
+    /// because you can't call [`remove`] at all while there are pending reservations. See
+    /// [`reserve_id`]. If you try to fill a reservation multiple times, or if you call this method
+    /// with IDs that aren't reserved, it will return an error.
     ///
-    /// # Leaks
-    ///
-    /// Violating this rule may lead to memory leaks. There's currently one edge case that triggers
-    /// this:
-    ///
-    /// 1. Reserve an ID with [`reserve_ids`].
-    /// 1. Reserve an ID with [`reserve_ids`].
+    /// [`allocate_empty_reservations`]: Registry::allocate_empty_reservations
+    /// [`remove`]: Registry::remove
+    /// [`reserve_id`]: Registry::reserve_id
     pub fn fill_empty_reservation(
         &mut self,
         id: ID,
