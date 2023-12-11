@@ -1,3 +1,5 @@
+//! additional ID types
+
 use std::fmt;
 use std::marker::PhantomData;
 use std::num::{NonZeroU32, NonZeroU64};
@@ -60,6 +62,7 @@ pub trait IdTrait: Sized + Copy {
     }
 }
 
+/// This is what the [`Id`](crate::Id) type alias at the crate root points to.
 // Note that we can't use #[derive(...)] for common traits here, because for example Id should be
 // Copy and Ord and Eq even when T isn't. See https://github.com/rust-lang/rust/issues/108894.
 #[repr(transparent)]
@@ -147,6 +150,15 @@ impl<T> Ord for Id64<T> {
     }
 }
 
+/// A smaller ID type for caller who want to save space.
+///
+/// Using this ID type requires picking a value for the `GENERATION_BITS` const parameter, which
+/// must be between 0 and 31 inclusive. Choosing 0 means that any removed IDs are immediately
+/// retired (see [`recycle`](crate::Registry::recycle)). Choosing 31 means that the only possible
+/// ID is the [`null`](IdTrait::null) ID, and any call to [`insert`](crate::Registry::insert) will
+/// panic. Most callers will probably want value in the middle like 10 or 12, but in general the
+/// expectation is that you're using this ID type because you know exactly what your application
+/// needs, and who am I to tell you what to do?
 // Note that we can't use #[derive(...)] for common traits here, because for example Id should be
 // Copy and Ord and Eq even when T isn't. See https://github.com/rust-lang/rust/issues/108894.
 #[repr(transparent)]

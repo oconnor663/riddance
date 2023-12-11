@@ -1,3 +1,20 @@
+//! A general-purpose [`Registry`] container, which stores objects and issues unique IDs for them.
+//! also known as a "slot map" or an "arena". Features include:
+//!
+//! - New IDs can be "reserved" atomically, without locking the [`Registry`]. See [`reserve_id`].
+//! - When the generation of a slot reaches its maximum, the slot is "retired" instead of allowing
+//!   the generation to roll over to zero. This prevents logic errors from colliding IDs.
+//! - The default [`Id`] type is 64 bits, but callers that need smallers IDs can use [`Id32`],
+//!   which has a configurable number of generation bits.
+//! - The [`recycle`] method makes it possible to reuse previously retired slots, though it can
+//!   reintroduce logic errors if you violate its contract.
+//! - By default ID types incorporate the `T` type parameter of the `Registry` that created them,
+//!   to avoid confusing IDs from different registries.
+//!
+//! [`reserve_id`]: Registry::reserve_id
+//! [`Id32`]: id::Id32
+//! [`recycle`]: Registry::recycle
+
 use std::cmp;
 use std::fmt;
 use std::marker::PhantomData;
@@ -440,6 +457,7 @@ where
 /// [`Id32`]: id::Id32
 pub type Id<T> = id::Id64<T>;
 
+/// The central data structure in this crate, which issues IDs and maps them to stored values.
 #[derive(Debug)]
 pub struct Registry<T, ID: IdTrait = Id<T>> {
     slots: Slots<T, ID::GenerationBits>,

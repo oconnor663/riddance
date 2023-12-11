@@ -1,3 +1,5 @@
+//! iterator types
+
 use crate::{id::IdTrait, Id, Registry};
 
 pub struct ReservationIter<'registry, T, ID: IdTrait = Id<T>> {

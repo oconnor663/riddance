@@ -1,3 +1,5 @@
+//! error types
+
 use std::fmt;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
