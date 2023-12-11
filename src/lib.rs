@@ -573,33 +573,60 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         self.slots.value_unchecked_mut(id.index()).assume_init_mut()
     }
 
+    // INVARIANT: The caller must check that self.free_indexes is not empty.
+    unsafe fn insert_into_reused_slot(&mut self, new_value_fn: impl FnOnce(ID) -> T) -> ID {
+        debug_assert!(self.free_indexes.len() > 0);
+        // This pop decrements self.free_indexes.len().
+        let index = self.free_indexes.pop().unwrap_unchecked();
+        let empty_state = self.slots.state_unchecked(index);
+        // Currently this assert is present even in release mode. Violating it could lead to memory
+        // leaks, if we overwrite an object in an occupied slot without dropping it. This can
+        // happen if you call fill_empty_reservation with an invalid ID, like a dangling ID
+        // retained across a call to recycle, which could mistakenly fill a slot that's still in
+        // the free list. After that an ordinary insertion could overwrite the same slot. However,
+        // failing to drop an object isn't Undefined Behavior, and we might remove this assert in
+        // the future (or demote it to debug_assert) if any benchmarks can show that it matters.
+        assert!(
+            state_is_empty::<ID::GenerationBits>(empty_state),
+            concat!(
+                "an index in the free list is occupied (did you retain a dangling ID across a ",
+                "call to recycle and then call fill_empty_reservation with it?)",
+            )
+        );
+        let occupied_state = occupied_state_from_empty::<ID::GenerationBits>(empty_state);
+        let new_id = ID::new_unchecked(index, occupied_state);
+        // This call could panic, so do it before modifying any state.
+        let value = new_value_fn(new_id);
+        self.slots.set_state_unchecked(index, occupied_state);
+        self.slots.value_unchecked_mut(index).write(value);
+        ID::new_unchecked(index, occupied_state)
+    }
+
+    // INVARIANT: The caller must reserve space.
+    unsafe fn insert_into_new_slot(&mut self, new_value_fn: impl FnOnce(ID) -> T) -> ID {
+        debug_assert!((self.slots.len as usize) < self.capacity());
+        debug_assert!(self.slots.len < ID::max_len());
+        let index = self.slots.len;
+        let new_id = ID::new_unchecked(index, 0);
+        // This call could panic, so do it before modifying any state.
+        let value = new_value_fn(new_id);
+        // New state capacity is zero-initialized, so we only need to write the value here.
+        debug_assert_eq!(self.slots.state_unchecked(index), 0);
+        self.slots.value_unchecked_mut(index).write(value);
+        self.slots.len += 1;
+        ID::new_unchecked(index, 0)
+    }
+
     pub fn insert(&mut self, value: T) -> ID {
         assert_eq!(*self.reservation_cursor.get_mut(), 0, "pending reservation");
         // Reuse a free slot if there are any.
-        if let Some(index) = self.free_indexes.pop() {
-            unsafe {
-                let empty_state = self.slots.state_unchecked(index);
-                // Note that if this slot was previously retired and has been recycled, the new
-                // generation will wrap back to 0.
-                let occupied_state = occupied_state_from_empty::<ID::GenerationBits>(empty_state);
-                self.slots.set_state_unchecked(index, occupied_state);
-                self.slots.value_unchecked_mut(index).write(value);
-                // The flag bit is zero for the occupied state, so its value is equal to the
-                // generation of the new ID.
-                return ID::new_unchecked(index, occupied_state);
-            }
+        if !self.free_indexes.is_empty() {
+            return unsafe { self.insert_into_reused_slot(|_| value) };
         }
         // Panic if the index space is full.
         assert!(self.slots.len < ID::max_len(), "all slots occupied");
-        // Reserve a slot. New state capacity is zero-initialized, so we only need to initialize
-        // the value here.
         self.slots.reserve(1);
-        unsafe {
-            self.slots.value_unchecked_mut(self.slots.len).write(value);
-            let new_id = ID::new_unchecked(self.slots.len, 0);
-            self.slots.len += 1;
-            new_id
-        }
+        unsafe { self.insert_into_new_slot(|_| value) }
     }
 
     pub fn remove(&mut self, id: ID) -> Option<T> {
@@ -731,57 +758,17 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     where
         T: Copy,
     {
-        let cursor = *self.reservation_cursor.get_mut() as usize;
-        let reused_slots = cmp::min(cursor, self.free_indexes.len());
-        let reused_slots_start = self.free_indexes.len() - reused_slots as usize;
-        let new_slots = (cursor - reused_slots) as u32;
-        // We check for overflow in reserve_ids().
-        let new_len = self.slots.len + new_slots;
-
-        // Pre-allocate any new slots. This is the only step that can fail.
-        self.slots.reserve(new_slots);
-
-        // Reuse free slots.
-        for i in (reused_slots_start..self.free_indexes.len()).rev() {
-            unsafe {
-                let free_index = *self.free_indexes.get_unchecked(i);
-                let state = self.slots.state_unchecked(free_index);
-                let new_state = occupied_state_from_empty::<ID::GenerationBits>(state);
-                self.slots.value_unchecked_mut(free_index).write(value);
-                self.slots.set_state_unchecked(free_index, new_state);
-            }
-        }
-        self.free_indexes.truncate(reused_slots_start);
-
-        // Populate any new slots we allocated above. Their states are already zero.
-        for i in 0..new_slots {
-            unsafe {
-                self.slots
-                    .value_unchecked_mut(self.slots.len + i)
-                    .write(value);
-                debug_assert_eq!(self.slots.state_unchecked(self.slots.len), 0);
-            }
-        }
-
-        self.slots.len = new_len;
-        *self.reservation_cursor.get_mut() = 0;
+        self.fill_pending_reservations_with(|| value);
     }
 
-    pub fn fill_pending_reservations_with<F>(&mut self, mut new_value_fn: F)
-    where
-        F: FnMut() -> T,
-    {
+    pub fn fill_pending_reservations_with(&mut self, mut new_value_fn: impl FnMut() -> T) {
         self.fill_pending_reservations_with_id(|_| new_value_fn());
     }
 
-    pub fn fill_pending_reservations_with_id<F>(&mut self, mut new_value_fn: F)
-    where
-        F: FnMut(ID) -> T,
-    {
-        let cursor: &mut u32 = self.reservation_cursor.get_mut();
-        let reused_slots = cmp::min(*cursor as usize, self.free_indexes.len());
-        let reused_slots_start = self.free_indexes.len() - reused_slots;
-        let new_slots = *cursor - reused_slots as u32;
+    pub fn fill_pending_reservations_with_id(&mut self, mut new_value_fn: impl FnMut(ID) -> T) {
+        let reservations = *self.reservation_cursor.get_mut();
+        let reused_slots = cmp::min(reservations as usize, self.free_indexes.len());
+        let new_slots = reservations - reused_slots as u32;
         // We check for overflow in reserve_ids().
         let new_len = self.slots.len + new_slots;
 
@@ -789,37 +776,22 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         self.slots.reserve(new_slots);
 
         // Reuse free slots.
-        for i in (reused_slots_start..self.free_indexes.len()).rev() {
+        for _ in 0..reused_slots {
             unsafe {
-                let free_index = *self.free_indexes.get_unchecked(i);
-                let state = self.slots.state_unchecked(free_index);
-                let new_state = occupied_state_from_empty::<ID::GenerationBits>(state);
-                let new_id = ID::new_unchecked(free_index, new_state);
-                // This could panic. Do it before other writes.
-                self.slots
-                    .value_unchecked_mut(free_index)
-                    .write(new_value_fn(new_id));
-                self.slots.set_state_unchecked(free_index, new_state);
+                self.insert_into_reused_slot(&mut new_value_fn);
             }
-            self.free_indexes.pop();
-            *cursor -= 1;
+            *self.reservation_cursor.get_mut() -= 1;
         }
-        debug_assert_eq!(*cursor, new_slots);
+        debug_assert_eq!(*self.reservation_cursor.get_mut(), new_slots);
 
         // Populate any new slots we allocated above. Their states are already zero.
         for _ in 0..new_slots {
             unsafe {
-                let new_id = ID::new_unchecked(self.slots.len, 0);
-                // This could panic. Do it before other writes.
-                self.slots
-                    .value_unchecked_mut(self.slots.len)
-                    .write(new_value_fn(new_id));
-                debug_assert_eq!(self.slots.state_unchecked(self.slots.len), 0);
+                self.insert_into_new_slot(&mut new_value_fn);
             }
-            self.slots.len += 1;
-            *cursor -= 1;
+            *self.reservation_cursor.get_mut() -= 1;
         }
-        debug_assert_eq!(*cursor, 0);
+        debug_assert_eq!(*self.reservation_cursor.get_mut(), 0);
         debug_assert_eq!(new_len, self.slots.len);
     }
 
