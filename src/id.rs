@@ -1,6 +1,7 @@
 //! additional ID types
 
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::num::{NonZeroU32, NonZeroU64};
 use typenum::Unsigned;
@@ -8,7 +9,7 @@ use typenum::Unsigned;
 #[cfg(test)]
 use std::num::NonZeroU8;
 
-pub trait IdTrait: Sized + Copy {
+pub trait IdTrait: Sized + Copy + Clone + PartialEq + Eq + PartialOrd + Ord + Hash {
     type IndexBits: Unsigned;
     type GenerationBits: Unsigned;
 
@@ -121,10 +122,10 @@ where
     }
 }
 
-impl<T> std::hash::Hash for Id64<T> {
+impl<T> Hash for Id64<T> {
     fn hash<H>(&self, state: &mut H)
     where
-        H: std::hash::Hasher,
+        H: Hasher,
     {
         self.0.hash(state);
     }
@@ -246,10 +247,10 @@ where
     }
 }
 
-impl<T, const GENERATION_BITS: usize> std::hash::Hash for Id32<T, GENERATION_BITS> {
+impl<T, const GENERATION_BITS: usize> Hash for Id32<T, GENERATION_BITS> {
     fn hash<H>(&self, state: &mut H)
     where
-        H: std::hash::Hasher,
+        H: Hasher,
     {
         self.0.hash(state);
     }
@@ -275,56 +276,89 @@ impl<T, const GENERATION_BITS: usize> Ord for Id32<T, GENERATION_BITS> {
     }
 }
 
-/// Id8 is only for testing.
 #[cfg(test)]
-#[repr(transparent)]
-pub struct Id8<T, const GENERATION_BITS: usize>(
-    NonZeroU8,
-    // https://doc.rust-lang.org/nomicon/phantom-data.html#table-of-phantomdata-patterns
-    PhantomData<fn() -> T>,
-);
+pub use id8::Id8;
 
 #[cfg(test)]
-impl<T, const GENERATION_BITS: usize> IdTrait for Id8<T, GENERATION_BITS>
-where
-    typenum::Const<GENERATION_BITS>: typenum::ToUInt,
-    typenum::U<GENERATION_BITS>: Unsigned,
-    typenum::U8: std::ops::Sub<typenum::U<GENERATION_BITS>>,
-    <typenum::U8 as std::ops::Sub<typenum::U<GENERATION_BITS>>>::Output: Unsigned,
-{
-    type IndexBits = typenum::Diff<typenum::U8, typenum::U<GENERATION_BITS>>;
-    type GenerationBits = typenum::U<GENERATION_BITS>;
+mod id8 {
+    use super::*;
 
-    unsafe fn new_unchecked(index: u32, generation: u32) -> Self {
-        let data = ((index as u8) << GENERATION_BITS) | generation as u8;
-        unsafe {
-            Self(
-                // Note that adding 1 here makes data=u8::MAX unrepresentable, rather than data=0.
-                NonZeroU8::new_unchecked(data + 1),
-                PhantomData,
-            )
+    /// Id8 is only for testing.
+    #[repr(transparent)]
+    pub struct Id8<T, const GENERATION_BITS: usize>(
+        NonZeroU8,
+        // https://doc.rust-lang.org/nomicon/phantom-data.html#table-of-phantomdata-patterns
+        PhantomData<fn() -> T>,
+    );
+
+    impl<T, const GENERATION_BITS: usize> IdTrait for Id8<T, GENERATION_BITS>
+    where
+        typenum::Const<GENERATION_BITS>: typenum::ToUInt,
+        typenum::U<GENERATION_BITS>: Unsigned,
+        typenum::U8: std::ops::Sub<typenum::U<GENERATION_BITS>>,
+        <typenum::U8 as std::ops::Sub<typenum::U<GENERATION_BITS>>>::Output: Unsigned,
+    {
+        type IndexBits = typenum::Diff<typenum::U8, typenum::U<GENERATION_BITS>>;
+        type GenerationBits = typenum::U<GENERATION_BITS>;
+
+        unsafe fn new_unchecked(index: u32, generation: u32) -> Self {
+            let data = ((index as u8) << GENERATION_BITS) | generation as u8;
+            unsafe {
+                Self(
+                    // Note that adding 1 here makes data=u8::MAX unrepresentable, rather than data=0.
+                    NonZeroU8::new_unchecked(data + 1),
+                    PhantomData,
+                )
+            }
+        }
+
+        fn index(&self) -> u32 {
+            // Note that subtracting 1 here makes data=u8::MAX unrepresentable, rather than data=0.
+            let data = (self.0.get() - 1) as u32;
+            data >> GENERATION_BITS
+        }
+
+        fn generation(&self) -> u32 {
+            // Note that subtracting 1 here makes data=u8::MAX unrepresentable, rather than data=0.
+            let data = (self.0.get() - 1) as u32;
+            data & !(u32::MAX << GENERATION_BITS)
         }
     }
 
-    fn index(&self) -> u32 {
-        // Note that subtracting 1 here makes data=u8::MAX unrepresentable, rather than data=0.
-        let data = (self.0.get() - 1) as u32;
-        data >> GENERATION_BITS
+    impl<T, const GENERATION_BITS: usize> Copy for Id8<T, GENERATION_BITS> {}
+
+    impl<T, const GENERATION_BITS: usize> Clone for Id8<T, GENERATION_BITS> {
+        fn clone(&self) -> Self {
+            Self(self.0, PhantomData)
+        }
     }
 
-    fn generation(&self) -> u32 {
-        // Note that subtracting 1 here makes data=u8::MAX unrepresentable, rather than data=0.
-        let data = (self.0.get() - 1) as u32;
-        data & !(u32::MAX << GENERATION_BITS)
+    impl<T, const GENERATION_BITS: usize> Hash for Id8<T, GENERATION_BITS> {
+        fn hash<H>(&self, state: &mut H)
+        where
+            H: Hasher,
+        {
+            self.0.hash(state);
+        }
     }
-}
 
-#[cfg(test)]
-impl<T, const GENERATION_BITS: usize> Copy for Id8<T, GENERATION_BITS> {}
+    impl<T, const GENERATION_BITS: usize> PartialEq for Id8<T, GENERATION_BITS> {
+        fn eq(&self, other: &Self) -> bool {
+            self.0 == other.0
+        }
+    }
 
-#[cfg(test)]
-impl<T, const GENERATION_BITS: usize> Clone for Id8<T, GENERATION_BITS> {
-    fn clone(&self) -> Self {
-        Self(self.0, PhantomData)
+    impl<T, const GENERATION_BITS: usize> Eq for Id8<T, GENERATION_BITS> {}
+
+    impl<T, const GENERATION_BITS: usize> PartialOrd for Id8<T, GENERATION_BITS> {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            self.0.partial_cmp(&other.0)
+        }
+    }
+
+    impl<T, const GENERATION_BITS: usize> Ord for Id8<T, GENERATION_BITS> {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            self.0.cmp(&other.0)
+        }
     }
 }
