@@ -675,6 +675,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         ID::new_unchecked(index, 0)
     }
 
+    #[must_use]
     pub fn insert(&mut self, value: T) -> ID {
         assert_eq!(*self.reservation_cursor.get_mut(), 0, "pending reservation");
         // Reuse a free slot if there are any.
