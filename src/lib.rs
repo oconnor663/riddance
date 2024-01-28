@@ -49,7 +49,6 @@ use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use typenum::Unsigned;
 
-pub mod error;
 pub mod id;
 pub mod id_map;
 pub mod iter;
@@ -638,20 +637,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         // This pop decrements self.free_indexes.len().
         let index = self.free_indexes.pop().unwrap_unchecked();
         let empty_state = self.slots.state_unchecked(index);
-        // Currently this assert is present even in release mode. Violating it could lead to memory
-        // leaks, if we overwrite an object in an occupied slot without dropping it. This can
-        // happen if you call fill_empty_reservation with an invalid ID, like a dangling ID
-        // retained across a call to recycle, which could mistakenly fill a slot that's still in
-        // the free list. After that an ordinary insertion could overwrite the same slot. However,
-        // failing to drop an object isn't Undefined Behavior, and we might remove this assert in
-        // the future (or demote it to debug_assert) if any benchmarks can show that it matters.
-        assert!(
-            state_is_empty::<ID::GenerationBits>(empty_state),
-            concat!(
-                "an index in the free list is occupied (did you retain a dangling ID across a ",
-                "call to recycle and then call fill_empty_reservation with it?)",
-            )
-        );
+        debug_assert!(state_is_empty::<ID::GenerationBits>(empty_state));
         let occupied_state = occupied_state_from_empty::<ID::GenerationBits>(empty_state);
         let new_id = ID::new_unchecked(index, occupied_state);
         // This call could panic, so do it before modifying any state.
@@ -735,21 +721,12 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     ///
     /// The new reservation is "pending", and [`contains_id`] will report `false` for the reserved
     /// ID. Similarly, [`get`] and [`get_mut`] will return `None`. After making any number of
-    /// pending reservations, you **must** allocate them. There are two ways to allocate
-    /// reservations, both of which require mutable access to the registry. First, you can fill
-    /// them with values using one of the following methods, after which [`contains_id`] will
-    /// report `true`:
+    /// pending reservations, you **must** fill them using one of the following methods, which
+    /// require mutable access to the registry:
     ///
     /// - [`fill_pending_reservations`]
     /// - [`fill_pending_reservations_with`]
     /// - [`fill_pending_reservations_with_id`]
-    ///
-    /// Alternatively, you can allocate (or potentially reuse) empty reserved slots by calling
-    /// [`allocate_empty_reservations`]. In that case [`contains_id`] still reports `false` for
-    /// each reserved ID until you call [`fill_empty_reservation`] on it, which you can do at any
-    /// time. You can also [`remove`] an empty reservation without filling it, in which case
-    /// further attempts to fill it will return an error. (But note that you can't [`remove`] a
-    /// _pending_ reservation. See immediately below.)
     ///
     /// The following methods will panic if there are any pending reservations:
     ///
@@ -757,7 +734,6 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     /// - [`remove`]
     /// - [`recycle`]
     /// - [`clone`]
-    /// - [`fill_empty_reservation`]
     ///
     /// See also [`reserve_ids`].
     ///
@@ -772,7 +748,6 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     /// [`remove`]: Registry::remove
     /// [`recycle`]: Registry::recycle
     /// [`clone`]: Registry::clone
-    /// [`fill_empty_reservation`]: Registry::fill_empty_reservation
     /// [`reserve_ids`]: Registry::reserve_ids
     #[must_use]
     pub fn reserve_id(&self) -> ID {
@@ -871,87 +846,6 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         debug_assert_eq!(new_len, self.slots.len);
     }
 
-    pub fn allocate_empty_reservations(&mut self) {
-        let cursor: &mut u32 = self.reservation_cursor.get_mut();
-        let reused_slots = cmp::min(*cursor as usize, self.free_indexes.len());
-        let reused_slots_start = self.free_indexes.len() - reused_slots;
-        let new_slots = *cursor - reused_slots as u32;
-
-        // Pre-allocate any new slots.
-        self.slots.reserve(new_slots);
-
-        // Reuse free slots. We don't need to modify their states at all, just remove them from the
-        // free indexes list.
-        self.free_indexes.truncate(reused_slots_start);
-
-        // Newly allocated slots have state zero, which isn't correct for an empty reservation.
-        // They need to have the retired state, so that filling them wraps the generation to zero.
-        let retired_state = empty_state_from_occupied::<ID::GenerationBits>(ID::max_generation());
-        debug_assert!(state_is_retired::<ID::GenerationBits>(retired_state));
-        for i in 0..new_slots {
-            unsafe {
-                // TODO: Optimize this to memset whole u32 words.
-                self.slots
-                    .set_state_unchecked(self.slots.len + i, retired_state);
-            }
-        }
-        self.slots.len += new_slots;
-        *cursor = 0;
-    }
-
-    /// Provide a value for one empty reservation. This is used together with
-    /// [`allocate_empty_reservations`].
-    ///
-    /// Empty reservations can be filled in any order. You can also [`remove`] a reserved ID
-    /// without ever filling it. But note that you can't [`remove`] a _pending_ reservation,
-    /// because you can't call [`remove`] at all while there are pending reservations. See
-    /// [`reserve_id`]. If you try to fill a reservation multiple times, or if you call this method
-    /// with IDs that aren't reserved, it will return an error.
-    ///
-    /// [`allocate_empty_reservations`]: Registry::allocate_empty_reservations
-    /// [`remove`]: Registry::remove
-    /// [`reserve_id`]: Registry::reserve_id
-    pub fn fill_empty_reservation(
-        &mut self,
-        id: ID,
-        value: T,
-    ) -> Result<(), error::FillEmptyReservationError<T>> {
-        assert_eq!(*self.reservation_cursor.get_mut(), 0, "pending reservation");
-        self.debug_best_effort_checks_for_contract_violations(id);
-        let error_kind;
-        if let Some(state) = self.slots.state(id.index()) {
-            let expected_generation = if id.generation() == 0 {
-                ID::max_generation()
-            } else {
-                id.generation() - 1
-            };
-            let reserved_state =
-                empty_state_from_occupied::<ID::GenerationBits>(expected_generation);
-            if state == reserved_state {
-                // Happy path: the reservation is valid.
-                unsafe {
-                    self.slots.set_state_unchecked(id.index(), id.generation());
-                    self.slots.value_unchecked_mut(id.index()).write(value);
-                }
-                return Ok(());
-            }
-            let state_generation = generation_from_state::<ID::GenerationBits>(state);
-            if state == id.generation() {
-                error_kind = error::FillEmptyReservationErrorKind::Exists;
-            } else if state_generation >= id.generation() {
-                error_kind = error::FillEmptyReservationErrorKind::Dangling;
-            } else {
-                error_kind = error::FillEmptyReservationErrorKind::GenerationTooNew;
-            }
-        } else {
-            error_kind = error::FillEmptyReservationErrorKind::IndexOutOfBounds;
-        }
-        Err(error::FillEmptyReservationError {
-            inner: value,
-            kind: error_kind,
-        })
-    }
-
     /// Mark all retired slots as free, making them available for future insertions and
     /// reservations. Dangling IDs (that is, IDs passed to [`remove`]) from before the call to
     /// `recycle` **must not** be used again with any method on this `Registry`. Generally callers
@@ -959,9 +853,8 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     ///
     /// If you retain dangling IDs across a call to `recycle`, they can collide with newly issued
     /// IDs, and calls to [`get`], [`get_mut`], and [`contains_id`] can return confusing results.
-    /// Calling [`fill_empty_reservation`] on these IDs can also lead to memory leaks. This
-    /// behavior is memory-safe, but these are logic bugs, similar to the logic bugs that can arise
-    /// if you modify a key after it's been inserted into a [`HashMap`].
+    /// This behavior is memory-safe, but these are logic bugs, similar to the logic bugs that can
+    /// arise if you modify a key after it's been inserted into a [`HashMap`].
     ///
     /// # Panics
     ///
@@ -974,7 +867,6 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     /// [`get`]: Registry::get
     /// [`get_mut`]: Registry::get_mut
     /// [`contains_id`]: Registry::contains_id
-    /// [`fill_empty_reservation`]: Registry::fill_empty_reservation
     /// [`HashMap`]: https://doc.rust-lang.org/std/collections/struct.HashMap.html
     pub fn recycle(&mut self) {
         assert_eq!(*self.reservation_cursor.get_mut(), 0, "pending reservation");
