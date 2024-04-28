@@ -9,7 +9,7 @@ use typenum::Unsigned;
 #[cfg(test)]
 use std::num::NonZeroU8;
 
-pub trait IdTrait: Sized + Copy + Clone + PartialEq + Eq + PartialOrd + Ord + Hash {
+pub trait IdTrait: Sized + Copy + Clone + PartialEq + Eq + Hash {
     type IndexBits: Unsigned;
     type GenerationBits: Unsigned;
 
@@ -65,7 +65,7 @@ pub trait IdTrait: Sized + Copy + Clone + PartialEq + Eq + PartialOrd + Ord + Ha
 
 /// This is what the [`Id`](crate::Id) type alias at the crate root points to.
 // Note that we can't use #[derive(...)] for common traits here, because for example Id should be
-// Copy and Ord and Eq even when T isn't. See https://github.com/rust-lang/rust/issues/108894.
+// Copy and Eq even when T isn't. See https://github.com/rust-lang/rust/issues/108894.
 #[repr(transparent)]
 pub struct Id64<T>(
     NonZeroU64,
@@ -139,18 +139,6 @@ impl<T> PartialEq for Id64<T> {
 
 impl<T> Eq for Id64<T> {}
 
-impl<T> PartialOrd for Id64<T> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.0.partial_cmp(&other.0)
-    }
-}
-
-impl<T> Ord for Id64<T> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.cmp(&other.0)
-    }
-}
-
 /// A smaller ID type for caller who want to save space.
 ///
 /// Using this ID type requires picking a value for the `GENERATION_BITS` const parameter, which
@@ -188,7 +176,7 @@ impl<T> Ord for Id64<T> {
 /// # }
 /// ```
 // Note that we can't use #[derive(...)] for common traits here, because for example Id should be
-// Copy and Ord and Eq even when T isn't. See https://github.com/rust-lang/rust/issues/108894.
+// Copy and Eq even when T isn't. See https://github.com/rust-lang/rust/issues/108894.
 #[repr(transparent)]
 pub struct Id32<T, const GENERATION_BITS: usize>(
     NonZeroU32,
@@ -264,18 +252,6 @@ impl<T, const GENERATION_BITS: usize> PartialEq for Id32<T, GENERATION_BITS> {
 
 impl<T, const GENERATION_BITS: usize> Eq for Id32<T, GENERATION_BITS> {}
 
-impl<T, const GENERATION_BITS: usize> PartialOrd for Id32<T, GENERATION_BITS> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.0.partial_cmp(&other.0)
-    }
-}
-
-impl<T, const GENERATION_BITS: usize> Ord for Id32<T, GENERATION_BITS> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.cmp(&other.0)
-    }
-}
-
 #[cfg(test)]
 pub use id8::Id8;
 
@@ -349,16 +325,4 @@ mod id8 {
     }
 
     impl<T, const GENERATION_BITS: usize> Eq for Id8<T, GENERATION_BITS> {}
-
-    impl<T, const GENERATION_BITS: usize> PartialOrd for Id8<T, GENERATION_BITS> {
-        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-            self.0.partial_cmp(&other.0)
-        }
-    }
-
-    impl<T, const GENERATION_BITS: usize> Ord for Id8<T, GENERATION_BITS> {
-        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-            self.0.cmp(&other.0)
-        }
-    }
 }
