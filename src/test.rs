@@ -1,4 +1,5 @@
 use super::*;
+use crate::error::FillEmptyReservationErrorKind;
 use crate::id::{Id32, Id64, Id8};
 use std::panic;
 
@@ -352,6 +353,7 @@ fn test_pending_reservation_panics() {
     should_panic(|| registry.remove(null));
     should_panic(|| registry.recycle());
     should_panic(|| registry.clone());
+    should_panic(|| registry.fill_empty_reservation(null, "foo".into()));
 }
 
 #[test]
@@ -389,6 +391,97 @@ fn test_reserve_ids() {
     assert_eq!(registry.get(id1).unwrap(), "old");
     assert_eq!(registry.get(id2).unwrap(), "new");
     assert_eq!(registry.get(id3).unwrap(), "new");
+}
+
+#[test]
+fn test_empty_reservations() {
+    let mut registry = Registry::<String>::new();
+    let id0_old = registry.insert("old".into());
+    let id1 = registry.insert("old".into());
+    registry.remove(id0_old);
+    assert!(!registry.contains_id(id0_old));
+    assert!(registry.contains_id(id1));
+
+    // Reserve a couple of IDs individually.
+    let id0 = registry.reserve_id();
+    assert_eq!(id0.index(), 0);
+    assert_eq!(id0.generation(), 1);
+    assert!(!registry.contains_id(id0));
+    let id2 = registry.reserve_id();
+    assert_eq!(id2.index(), 2);
+    assert_eq!(id2.generation(), 0);
+    assert!(!registry.contains_id(id2));
+
+    // Now there are pending reservations, and methods like insert will panic. See also
+    // test_pending_reservation_panics.
+    should_panic(|| registry.insert(String::new()));
+
+    // Allocate empty slots for those IDs.
+    registry.allocate_empty_reservations();
+    assert!(!registry.contains_id(id0));
+    assert!(!registry.contains_id(id2));
+
+    // Now there are no pending reservations, and a regular insert can succeed.
+    let id3 = registry.insert("new".into());
+    assert!(registry.contains_id(id3));
+
+    // Fill the empty slots.
+    registry.fill_empty_reservation(id0, "new".into()).unwrap();
+    assert!(registry.contains_id(id0));
+    assert!(!registry.contains_id(id2));
+    registry.fill_empty_reservation(id2, "new".into()).unwrap();
+    assert!(registry.contains_id(id0));
+    assert!(registry.contains_id(id2));
+
+    // Trying to fill IDs that aren't reserved should fail.
+    let error = registry
+        .fill_empty_reservation(id0_old, "blarg".into())
+        .unwrap_err();
+    assert_eq!(error.kind, FillEmptyReservationErrorKind::Dangling);
+    for id in [id0, id1, id2, id3] {
+        let error = registry
+            .fill_empty_reservation(id, "blarg".into())
+            .unwrap_err();
+        assert_eq!(error.kind, FillEmptyReservationErrorKind::Exists);
+        assert_eq!(error.into_inner(), "blarg");
+    }
+    registry.remove(id0);
+    dbg!(id0.generation());
+    let error = registry
+        .fill_empty_reservation(id0, "blarg".into())
+        .unwrap_err();
+    assert_eq!(error.kind, FillEmptyReservationErrorKind::Dangling);
+
+    // The following cases trip debug assertions before returning an error, so we only run them
+    // in release mode.
+    #[cfg(not(debug_assertions))]
+    {
+        // An ID with a generation that's newer than its slot (and not a reservation for that
+        // slot) can only be produced by retaining a dangling ID across a call to recycle, or
+        // by handcrafting a bad ID. Here we do it by hancrafting.
+
+        // For an empty slot, generation + 1 is a valid reservation. Test +2 here.
+        let too_new_id = Id::new(id0.index(), id0.generation() + 2).unwrap();
+        let error = registry
+            .fill_empty_reservation(too_new_id, "blarg".into())
+            .unwrap_err();
+        assert_eq!(error.kind, FillEmptyReservationErrorKind::GenerationTooNew);
+
+        // For an occupied slot, generation + 1 should be impossible.
+        let too_new_id = Id::new(id1.index(), id1.generation() + 1).unwrap();
+        let error = registry
+            .fill_empty_reservation(too_new_id, "blarg".into())
+            .unwrap_err();
+        assert_eq!(error.kind, FillEmptyReservationErrorKind::GenerationTooNew);
+
+        // An ID with an out-of-bounds index should never be possible other than by
+        // handcrafting it.
+        let out_of_bounds_id = Id::new(id3.index() + 1, 0).unwrap();
+        let error = registry
+            .fill_empty_reservation(out_of_bounds_id, "blarg".into())
+            .unwrap_err();
+        assert_eq!(error.kind, FillEmptyReservationErrorKind::IndexOutOfBounds);
+    }
 }
 
 #[test]
