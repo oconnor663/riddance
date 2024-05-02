@@ -329,31 +329,15 @@ fn test_id_sizes() {
 
 #[test]
 fn test_with_capacity() {
-    for cap in 0..100 {
-        let registry = Registry::<String>::with_capacity(cap);
-        assert!(registry.capacity() >= cap);
+    // I've removed the .capacity() method while I think about how it should interact with
+    // reservations, so in the meantime there's not much to assert here, and this test is mostly
+    // for Miri.
+    for cap in 0..10 {
+        let mut registry = Registry::<String>::with_capacity(cap);
+        for x in 0..10 {
+            _ = registry.insert(x.to_string());
+        }
     }
-}
-
-#[test]
-fn test_pending_reservation_panics() {
-    let mut registry = Registry::<String>::new();
-    _ = registry.reserve_ids(1);
-
-    // These methods don't panic.
-    let null = Id::null();
-    registry.len();
-    registry.capacity();
-    registry.contains_id(null);
-    registry.get(null);
-    registry.get_mut(null);
-
-    // These methods do panic.
-    should_panic(|| registry.insert(String::new()));
-    should_panic(|| registry.remove(null));
-    should_panic(|| registry.recycle());
-    should_panic(|| registry.clone());
-    should_panic(|| registry.fill_empty_reservation(null, "foo".into()));
 }
 
 #[test]
@@ -386,7 +370,9 @@ fn test_reserve_ids() {
     assert_eq!(registry.get(id1).unwrap(), "old");
     assert!(registry.get(id2).is_none());
     assert!(registry.get(id3).is_none());
-    registry.fill_pending_reservations_with(|| "new".into());
+    for id in [id0, id2, id3] {
+        registry.insert_reserved(id, "new".into()).unwrap();
+    }
     assert_eq!(registry.get(id0).unwrap(), "new");
     assert_eq!(registry.get(id1).unwrap(), "old");
     assert_eq!(registry.get(id2).unwrap(), "new");
@@ -412,44 +398,32 @@ fn test_empty_reservations() {
     assert_eq!(id2.generation(), 0);
     assert!(!registry.contains_id(id2));
 
-    // Now there are pending reservations, and methods like insert will panic. See also
-    // test_pending_reservation_panics.
-    should_panic(|| registry.insert(String::new()));
-
-    // Allocate empty slots for those IDs.
-    registry.allocate_empty_reservations();
+    // Explicitly allocate empty slots for those IDs.
+    registry.allocate_reservations();
     assert!(!registry.contains_id(id0));
     assert!(!registry.contains_id(id2));
 
-    // Now there are no pending reservations, and a regular insert can succeed.
-    let id3 = registry.insert("new".into());
-    assert!(registry.contains_id(id3));
-
     // Fill the empty slots.
-    registry.fill_empty_reservation(id0, "new".into()).unwrap();
+    registry.insert_reserved(id0, "new".into()).unwrap();
     assert!(registry.contains_id(id0));
     assert!(!registry.contains_id(id2));
-    registry.fill_empty_reservation(id2, "new".into()).unwrap();
+    registry.insert_reserved(id2, "new".into()).unwrap();
     assert!(registry.contains_id(id0));
     assert!(registry.contains_id(id2));
 
     // Trying to fill IDs that aren't reserved should fail.
     let error = registry
-        .fill_empty_reservation(id0_old, "blarg".into())
+        .insert_reserved(id0_old, "blarg".into())
         .unwrap_err();
     assert_eq!(error.kind, FillEmptyReservationErrorKind::Dangling);
-    for id in [id0, id1, id2, id3] {
-        let error = registry
-            .fill_empty_reservation(id, "blarg".into())
-            .unwrap_err();
+    for id in [id0, id1, id2] {
+        let error = registry.insert_reserved(id, "blarg".into()).unwrap_err();
         assert_eq!(error.kind, FillEmptyReservationErrorKind::Exists);
         assert_eq!(error.into_inner(), "blarg");
     }
     registry.remove(id0);
     dbg!(id0.generation());
-    let error = registry
-        .fill_empty_reservation(id0, "blarg".into())
-        .unwrap_err();
+    let error = registry.insert_reserved(id0, "blarg".into()).unwrap_err();
     assert_eq!(error.kind, FillEmptyReservationErrorKind::Dangling);
 
     // The following cases trip debug assertions before returning an error, so we only run them
@@ -463,58 +437,24 @@ fn test_empty_reservations() {
         // For an empty slot, generation + 1 is a valid reservation. Test +2 here.
         let too_new_id = Id::new(id0.index(), id0.generation() + 2).unwrap();
         let error = registry
-            .fill_empty_reservation(too_new_id, "blarg".into())
+            .insert_reserved(too_new_id, "blarg".into())
             .unwrap_err();
         assert_eq!(error.kind, FillEmptyReservationErrorKind::GenerationTooNew);
 
         // For an occupied slot, generation + 1 should be impossible.
         let too_new_id = Id::new(id1.index(), id1.generation() + 1).unwrap();
         let error = registry
-            .fill_empty_reservation(too_new_id, "blarg".into())
+            .insert_reserved(too_new_id, "blarg".into())
             .unwrap_err();
         assert_eq!(error.kind, FillEmptyReservationErrorKind::GenerationTooNew);
 
         // An ID with an out-of-bounds index should never be possible other than by
         // handcrafting it.
-        let out_of_bounds_id = Id::new(id3.index() + 1, 0).unwrap();
+        let out_of_bounds_id = Id::new(id2.index() + 1, 0).unwrap();
         let error = registry
-            .fill_empty_reservation(out_of_bounds_id, "blarg".into())
+            .insert_reserved(out_of_bounds_id, "blarg".into())
             .unwrap_err();
         assert_eq!(error.kind, FillEmptyReservationErrorKind::IndexOutOfBounds);
-    }
-}
-
-#[test]
-fn test_fill_pending_reservations() {
-    let mut registry = Registry::<i32>::with_id_type();
-    let id0_old = registry.insert(99);
-    let id1_old = registry.insert(99);
-    registry.remove(id1_old);
-    registry.remove(id0_old);
-    let mut iterator = registry.reserve_ids(3);
-    let id0 = iterator.next().unwrap();
-    let id1 = iterator.next().unwrap();
-    let mut iterator = registry.reserve_ids(3);
-    let id2 = iterator.next().unwrap();
-    let id3 = iterator.next().unwrap();
-    registry.fill_pending_reservations(42);
-    for id in [id0, id1, id2, id3] {
-        assert_eq!(registry[id], 42);
-    }
-}
-
-#[test]
-fn test_fill_pending_reservations_with_id() {
-    type ID = Id<()>;
-    let mut registry = Registry::<ID, ID>::with_id_type();
-    let id0 = registry.reserve_id();
-    let mut iterator = registry.reserve_ids(3);
-    let id1 = iterator.next().unwrap();
-    let id2 = iterator.next().unwrap();
-    let id3 = iterator.next().unwrap();
-    registry.fill_pending_reservations_with_id(|id| id);
-    for id in [id0, id1, id2, id3] {
-        assert_eq!(id, registry[id]);
     }
 }
 
