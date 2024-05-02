@@ -90,7 +90,7 @@ fn test_dangling_id_after_recycle_panics() {
 
     assert_eq!(registry.free_indexes.len(), 0);
     assert_eq!(registry.retired_indexes.len(), 1);
-    registry.recycle();
+    registry.recycle_retired();
     assert_eq!(registry.free_indexes.len(), 1);
     assert_eq!(registry.retired_indexes.len(), 0);
 
@@ -191,7 +191,7 @@ fn test_gbits_0() {
     assert_eq!(registry.slots.state(1), Some(1));
     assert_eq!(registry.free_indexes, []);
     assert_eq!(registry.retired_indexes, [0, 1]);
-    registry.recycle();
+    registry.recycle_retired();
     assert_eq!(registry.len(), 0);
     assert_eq!(registry.slots.state(0), Some(1));
     assert_eq!(registry.slots.state(1), Some(1));
@@ -430,9 +430,9 @@ fn test_empty_reservations() {
     // in release mode.
     #[cfg(not(debug_assertions))]
     {
-        // An ID with a generation that's newer than its slot (and not a reservation for that
-        // slot) can only be produced by retaining a dangling ID across a call to recycle, or
-        // by handcrafting a bad ID. Here we do it by hancrafting.
+        // An ID with a generation that's newer than its slot (and not a reservation for that slot)
+        // can only be produced by retaining a dangling ID across a call to recycle_retired, or by
+        // handcrafting a bad ID. Here we do it by hancrafting.
 
         // For an empty slot, generation + 1 is a valid reservation. Test +2 here.
         let too_new_id = Id::new(id0.index(), id0.generation() + 2).unwrap();

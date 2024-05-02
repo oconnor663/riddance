@@ -7,9 +7,9 @@
 //!   the generation to roll over to zero. This prevents logic errors from colliding IDs.
 //! - The default [`Id`] type is 64 bits, but callers that need smallers IDs can use [`Id32`],
 //!   which has a configurable number of generation bits.
-//! - The [`recycle`] method makes it possible to reuse previously retired slots, though it can
-//!   introduce logic errors if you violate its contract. It's mainly intended for callers who use
-//!   [`Id32`].
+//! - The [`recycle_retired`] method makes it possible to reuse previously retired slots, though it
+//!   can introduce logic errors if you violate its contract. It's mainly intended for callers who
+//!   use [`Id32`].
 //! - By default ID types incorporate the `T` type parameter of the `Registry` that created them,
 //!   to avoid confusing IDs from different registries.
 //!
@@ -39,7 +39,7 @@
 //! [`reserve_id`]: Registry::reserve_id
 //! [`reserve_ids`]: Registry::reserve_ids
 //! [`Id32`]: id::Id32
-//! [`recycle`]: Registry::recycle
+//! [`recycle_retired`]: Registry::recycle_retired
 
 use std::cmp;
 use std::fmt;
@@ -470,17 +470,17 @@ where
 
 /// The default 64-bit ID type.
 ///
-/// This ID type has 32 index bits and 31 generation bits (not 32, because the [`Registry`] needs an
-/// extra bit to mark free slots). That's enough for 4 billion elements and a retirement rate of
+/// This ID type has 32 index bits and 31 generation bits (not 32, because the [`Registry`] needs
+/// an extra bit to mark free slots). That's enough for 4 billion elements and a retirement rate of
 /// one slot for every 2 billion removals. Most callers using this default ID type don't need to
-/// worry about these limits and don't need to call [`recycle`].
+/// worry about these limits and don't need to call [`recycle_retired`].
 ///
 /// Callers with very high performance requirements, for whom the difference between 64-bit IDs and
 /// 32-bit IDs matters, can consider using [`Id32`] instead. That type uses a configurable number
 /// of generation bits, and you have to think carefully about how many index bits you'll need and
-/// whether you'll need to [`recycle`].
+/// whether you'll need to [`recycle_retired`].
 ///
-/// [`recycle`]: Registry::recycle
+/// [`recycle_retired`]: Registry::recycle_retired
 /// [`Id32`]: id::Id32
 pub type Id<T> = id::Id64<T>;
 
@@ -554,7 +554,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     //    with another of the same time.
     // 2. The generation of an ID should never be newer than its slot. In addition to the cases
     //    above, you can also violate this rule by retaining a dangling ID across a call to
-    //    recycle().
+    //    recycle_retired().
     fn debug_best_effort_checks_for_contract_violations(&self, id: ID) {
         if !cfg!(debug_assertions) {
             return;
@@ -578,7 +578,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         };
         debug_assert!(
             id.generation() <= max_generation,
-            "ID generation is newer than its slot; did it dangle across a recycle()?",
+            "ID generation is newer than its slot; did it dangle across a recycle_retired()?",
         );
     }
 
@@ -637,15 +637,15 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         // Currently this assert is present even in release mode. Violating it could lead to memory
         // leaks, if we overwrite an object in an occupied slot without dropping it. This can
         // happen if you call insert_reserved with an invalid ID, like a dangling ID retained
-        // across a call to recycle, which could mistakenly fill a slot that's still in the free
-        // list. After that an ordinary insertion could overwrite the same slot. However, failing
-        // to drop an object isn't Undefined Behavior, and we might remove this assert in the
-        // future (or demote it to debug_assert) if any benchmarks can show that it matters.
+        // across a call to recycle_retired, which could mistakenly fill a slot that's still in the
+        // free list. After that an ordinary insertion could overwrite the same slot. However,
+        // failing to drop an object isn't Undefined Behavior, and we might remove this assert in
+        // the future (or demote it to debug_assert) if any benchmarks can show that it matters.
         assert!(
             state_is_empty::<ID::GenerationBits>(empty_state),
             concat!(
                 "an index in the free list is occupied (did you retain a dangling ID across a ",
-                "call to recycle and then call insert_reserved with it?)",
+                "call to recycle_retired and then call insert_reserved with it?)",
             )
         );
         let occupied_state = occupied_state_from_empty::<ID::GenerationBits>(empty_state);
@@ -696,7 +696,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     /// not yet given a value with [`insert_reserved`], will free the reserved slot and return
     /// `None`.
     ///
-    /// See also [`recycle`].
+    /// See also [`recycle_retired`].
     ///
     /// [`contains_id`]: Registry::contains_id
     /// [`get`]: Registry::get
@@ -704,7 +704,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     /// [`reserve_id`]: Registry::reserve_id
     /// [`reserve_ids`]: Registry::reserve_ids
     /// [`insert_reserved`]: Registry::insert_reserved
-    /// [`recycle`]: Registry::recycle
+    /// [`recycle_retired`]: Registry::recycle_retired
     pub fn remove(&mut self, id: ID) -> Option<T> {
         self.allocate_reservations();
         self.debug_best_effort_checks_for_contract_violations(id);
@@ -740,9 +740,9 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     /// If a reservation is no longer needed, you can [`remove`] it without inserting a value.
     ///
     /// Whenever you call a `&mut self` method that might change the size of the `Registry` or its
-    /// free list ([`insert`], [`insert_reserved`], [`remove`], or [`recycle`]), the Registry will
-    /// automatically allocate space for any pending reservations. You can optionally call
-    /// [`allocate_reservations`] to do this work in advance.
+    /// free list ([`insert`], [`insert_reserved`], [`remove`], or [`recycle_retired`]), the
+    /// Registry will automatically allocate space for any pending reservations. You can optionally
+    /// call [`allocate_reservations`] to do this work in advance.
     ///
     /// To reserve many IDs at once, see [`reserve_ids`].
     ///
@@ -752,7 +752,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     /// [`allocate_reservations`]: Registry::allocate_reservations
     /// [`insert`]: Registry::insert
     /// [`remove`]: Registry::remove
-    /// [`recycle`]: Registry::recycle
+    /// [`recycle_retired`]: Registry::recycle_retired
     /// [`insert_reserved`]: Registry::insert_reserved
     /// [`reserve_ids`]: Registry::reserve_ids
     #[must_use]
@@ -898,11 +898,17 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     }
 
     /// Mark all retired slots as free, making them available for future insertions and
-    /// reservations. Dangling IDs (that is, IDs passed to [`remove`]) from before the call to
-    /// `recycle` **must not** be used again with any method on this `Registry`. Generally callers
-    /// should delete all dangling IDs (or replace them with [`null`]) before calling `recycle`.
+    /// reservations.
     ///
-    /// If you retain dangling IDs across a call to `recycle`, they can collide with newly issued
+    /// Callers using `Registry` with the default [`Id`] type shouldn't need this method. [`Id`]
+    /// has 31 generation bits, so the retirement rate is one slot per ~2 billion removals, too
+    /// slow to matter in almost any practical case. This method is intended for callers using
+    /// [`Id32`](id::Id32).
+    ///
+    /// Dangling IDs (that is, IDs passed to [`remove`]) from before the call to `recycle_retired`
+    /// must not be used again with any method on this `Registry`. Generally callers should delete
+    /// all dangling IDs (or replace them with [`null`]) before calling `recycle_retired`. If you
+    /// retain dangling IDs across a call to `recycle_retired`, they can collide with newly issued
     /// IDs, and calls to [`get`], [`get_mut`], and [`contains_id`] can return confusing results.
     /// Calling [`insert_reserved`] on these IDs can also lead to memory leaks. This behavior is
     /// memory-safe, but these are logic bugs, similar to the logic bugs that can arise if you
@@ -910,9 +916,9 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     ///
     /// # Panics
     ///
-    /// `Registry` makes a best effort to detect violations of this rule. **Any** method on
-    /// `Registry` may panic if it sees an ID generation that's newer than the corresponding slot.
-    /// These checks are currently only done in debug mode, but this is not guaranteed.
+    /// `Registry` makes a best effort to detect violations of this rule. Any method on `Registry`
+    /// may panic if it sees an ID generation that's newer than the corresponding slot. These
+    /// checks are currently only done in debug mode, but this is not guaranteed.
     ///
     /// [`null`]: IdTrait::null
     /// [`remove`]: Registry::remove
@@ -921,7 +927,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     /// [`contains_id`]: Registry::contains_id
     /// [`insert_reserved`]: Registry::insert_reserved
     /// [`HashMap`]: https://doc.rust-lang.org/std/collections/struct.HashMap.html
-    pub fn recycle(&mut self) {
+    pub fn recycle_retired(&mut self) {
         self.allocate_reservations();
         // This clears retired_indexes.
         self.free_indexes.append(&mut self.retired_indexes);

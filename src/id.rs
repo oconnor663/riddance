@@ -144,11 +144,11 @@ impl<T> Eq for Id64<T> {}
 /// Using this ID type requires picking a value for the `GENERATION_BITS` const parameter, which
 /// must be between 0 and 31 inclusive. The number of index bits is 32 minus `GENERATION_BITS`.
 /// Setting `GENERATION_BITS` to 0 means that any removed IDs are immediately retired (see
-/// [`recycle`](crate::Registry::recycle)). Setting it to 31 means that the only possible ID is the
-/// [`null`](IdTrait::null) ID, and any call to [`insert`](crate::Registry::insert) will panic.
-/// Most callers will probably want a value somewhere in the middle, like 10 or 12. But in general
-/// you're using this ID type because you know exactly what your application needs, so who am I to
-/// tell you what to do? :)
+/// [`recycle_retired`](crate::Registry::recycle_retired)). Setting it to 31 means that the only
+/// possible ID is the [`null`](IdTrait::null) ID, and any call to
+/// [`insert`](crate::Registry::insert) will panic. Most callers will probably want a value
+/// somewhere in the middle, like 10 or 12. But in general you're using this ID type because you
+/// know exactly what your application needs, so who am I to tell you what to do? :)
 ///
 /// # Example
 ///
