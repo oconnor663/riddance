@@ -1,5 +1,5 @@
 use super::*;
-use crate::error::FillEmptyReservationErrorKind;
+use crate::error::InsertReservedErrorKind;
 use crate::id::{Id32, Id64, Id8};
 use std::panic;
 
@@ -415,16 +415,16 @@ fn test_empty_reservations() {
     let error = registry
         .insert_reserved(id0_old, "blarg".into())
         .unwrap_err();
-    assert_eq!(error.kind, FillEmptyReservationErrorKind::Dangling);
+    assert_eq!(error.kind, InsertReservedErrorKind::Dangling);
     for id in [id0, id1, id2] {
         let error = registry.insert_reserved(id, "blarg".into()).unwrap_err();
-        assert_eq!(error.kind, FillEmptyReservationErrorKind::Exists);
+        assert_eq!(error.kind, InsertReservedErrorKind::Exists);
         assert_eq!(error.into_inner(), "blarg");
     }
     registry.remove(id0);
     dbg!(id0.generation());
     let error = registry.insert_reserved(id0, "blarg".into()).unwrap_err();
-    assert_eq!(error.kind, FillEmptyReservationErrorKind::Dangling);
+    assert_eq!(error.kind, InsertReservedErrorKind::Dangling);
 
     // The following cases trip debug assertions before returning an error, so we only run them
     // in release mode.
@@ -439,14 +439,14 @@ fn test_empty_reservations() {
         let error = registry
             .insert_reserved(too_new_id, "blarg".into())
             .unwrap_err();
-        assert_eq!(error.kind, FillEmptyReservationErrorKind::GenerationTooNew);
+        assert_eq!(error.kind, InsertReservedErrorKind::GenerationTooNew);
 
         // For an occupied slot, generation + 1 should be impossible.
         let too_new_id = Id::new(id1.index(), id1.generation() + 1).unwrap();
         let error = registry
             .insert_reserved(too_new_id, "blarg".into())
             .unwrap_err();
-        assert_eq!(error.kind, FillEmptyReservationErrorKind::GenerationTooNew);
+        assert_eq!(error.kind, InsertReservedErrorKind::GenerationTooNew);
 
         // An ID with an out-of-bounds index should never be possible other than by
         // handcrafting it.
@@ -454,7 +454,7 @@ fn test_empty_reservations() {
         let error = registry
             .insert_reserved(out_of_bounds_id, "blarg".into())
             .unwrap_err();
-        assert_eq!(error.kind, FillEmptyReservationErrorKind::IndexOutOfBounds);
+        assert_eq!(error.kind, InsertReservedErrorKind::IndexOutOfBounds);
     }
 }
 

@@ -3,7 +3,8 @@
 use std::fmt;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum FillEmptyReservationErrorKind {
+#[non_exhaustive]
+pub(crate) enum InsertReservedErrorKind {
     Exists,
     Dangling,
     GenerationTooNew,
@@ -11,18 +12,18 @@ pub(crate) enum FillEmptyReservationErrorKind {
 }
 
 #[derive(Copy, Clone)]
-pub struct FillEmptyReservationError<T> {
-    pub(crate) kind: FillEmptyReservationErrorKind,
+pub struct InsertReservedError<T> {
+    pub(crate) kind: InsertReservedErrorKind,
     pub(crate) inner: T,
 }
 
-impl<T> FillEmptyReservationError<T> {
+impl<T> InsertReservedError<T> {
     pub fn into_inner(self) -> T {
         self.inner
     }
 }
 
-impl<T> fmt::Debug for FillEmptyReservationError<T> {
+impl<T> fmt::Debug for InsertReservedError<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("FillEmptyReservationError")
             .field("kind", &self.kind)
@@ -30,18 +31,18 @@ impl<T> fmt::Debug for FillEmptyReservationError<T> {
     }
 }
 
-impl<T> fmt::Display for FillEmptyReservationError<T> {
+impl<T> fmt::Display for InsertReservedError<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let message = match self.kind {
-            FillEmptyReservationErrorKind::Exists => "entry with this ID already exists",
-            FillEmptyReservationErrorKind::Dangling => "this ID has been removed",
-            FillEmptyReservationErrorKind::GenerationTooNew => {
+            InsertReservedErrorKind::Exists => "entry with this ID already exists",
+            InsertReservedErrorKind::Dangling => "this ID has been removed",
+            InsertReservedErrorKind::GenerationTooNew => {
                 "ID generation too new (dangling ID retained across recycle?)"
             }
-            FillEmptyReservationErrorKind::IndexOutOfBounds => "ID index out of bounds",
+            InsertReservedErrorKind::IndexOutOfBounds => "ID index out of bounds",
         };
         write!(f, "{}", message)
     }
 }
 
-impl<T> std::error::Error for FillEmptyReservationError<T> {}
+impl<T> std::error::Error for InsertReservedError<T> {}

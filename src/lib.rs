@@ -860,7 +860,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         &mut self,
         id: ID,
         value: T,
-    ) -> Result<(), error::FillEmptyReservationError<T>> {
+    ) -> Result<(), error::InsertReservedError<T>> {
         self.allocate_reservations();
         self.debug_best_effort_checks_for_contract_violations(id);
         let error_kind;
@@ -882,16 +882,16 @@ impl<T, ID: IdTrait> Registry<T, ID> {
             }
             let state_generation = generation_from_state::<ID::GenerationBits>(state);
             if state == id.generation() {
-                error_kind = error::FillEmptyReservationErrorKind::Exists;
+                error_kind = error::InsertReservedErrorKind::Exists;
             } else if state_generation >= id.generation() {
-                error_kind = error::FillEmptyReservationErrorKind::Dangling;
+                error_kind = error::InsertReservedErrorKind::Dangling;
             } else {
-                error_kind = error::FillEmptyReservationErrorKind::GenerationTooNew;
+                error_kind = error::InsertReservedErrorKind::GenerationTooNew;
             }
         } else {
-            error_kind = error::FillEmptyReservationErrorKind::IndexOutOfBounds;
+            error_kind = error::InsertReservedErrorKind::IndexOutOfBounds;
         }
-        Err(error::FillEmptyReservationError {
+        Err(error::InsertReservedError {
             inner: value,
             kind: error_kind,
         })
