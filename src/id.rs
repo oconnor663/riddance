@@ -3,32 +3,28 @@
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::NonZeroU64;
 use typenum::Unsigned;
 
-#[cfg(test)]
-use std::num::NonZeroU8;
+use crate::state::State;
 
 pub trait IdTrait: Sized + Copy + Clone + PartialEq + Eq + Hash {
     type IndexBits: Unsigned;
     type GenerationBits: Unsigned;
 
-    // The index must be less or equal to max_len (it's equal for the null ID), and the generation
-    // must not exceed the range of IndexBits and GenerationBits respectively.
-    unsafe fn new_unchecked(index: u32, generation: u32) -> Self;
-
-    fn index(&self) -> u32;
-
+    fn new(index: usize, generation: u32) -> Self;
+    fn index(&self) -> usize;
     fn generation(&self) -> u32;
+    fn matching_state(&self) -> State<Self::GenerationBits>;
+    fn null() -> Self;
+    fn is_null(&self) -> bool;
 
-    fn max_len() -> u32 {
+    fn max_len() -> usize {
         crate::static_assert_index_bits::<Self::IndexBits>();
-        // The all-1-bits index is unrepresentable, and the index one below that is reserved for
-        // the null ID. For example, if IndexBits=1 then index 1 is unrepresentable, index 0 is
-        // null, and max_len is 0. So you can create a Registry with IndexBits=1 if you really want
-        // to, but you can't insert anything into it. We avoid assuming anything about
-        // GenerationBits, because we support GenerationBits=0.
-        (u32::MAX >> (32 - Self::IndexBits::U32)) - 1
+        // The max index (equal to max_len) is reserved for the null ID. You can create a Registry
+        // with IndexBits=1 if you really want to, but you can't insert anything into it. We avoid
+        // assuming anything about GenerationBits, because we support GenerationBits=0.
+        (u32::MAX >> (32 - Self::IndexBits::U32)) as usize
     }
 
     fn max_generation() -> u32 {
@@ -36,21 +32,9 @@ pub trait IdTrait: Sized + Copy + Clone + PartialEq + Eq + Hash {
         (u32::MAX >> 1) >> (31 - Self::GenerationBits::U32)
     }
 
-    fn new(index: u32, generation: u32) -> Option<Self> {
-        // For the null ID, index == max_len.
-        if index > Self::max_len() || generation > Self::max_generation() {
-            None
-        } else {
-            Some(unsafe { Self::new_unchecked(index, generation) })
-        }
-    }
-
-    fn null() -> Self {
-        Self::new(Self::max_len(), 0).unwrap()
-    }
-
-    fn is_null(&self) -> bool {
-        self.index() == Self::max_len()
+    fn reserved_state(&self) -> State<Self::GenerationBits> {
+        // the same generation, with the occupied bit unset
+        State::new(self.generation() << 1)
     }
 
     fn debug_format(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
@@ -77,31 +61,50 @@ impl<T> IdTrait for Id64<T> {
     type IndexBits = typenum::U32;
     type GenerationBits = typenum::U31;
 
-    unsafe fn new_unchecked(index: u32, generation: u32) -> Self {
-        // There's 1 unused bit in Id64, and we could shift left by either 31 or 32 bits here. It
-        // seems better to shift 32, since that makes the index an aligned 4-byte word, which could
-        // be useful to the optimizer somehow.
-        let data = ((index as u64) << 32) | generation as u64;
-        unsafe {
-            Self(
-                // Note that adding 1 here makes data=u64::MAX unrepresentable, rather than data=0.
-                NonZeroU64::new_unchecked(data + 1),
-                PhantomData,
-            )
-        }
+    fn new(index: usize, generation: u32) -> Self {
+        // We store the entire state word in the top 32 bits of the ID. Since occupied states are
+        // odd, this means that bit 32 is always 1.
+        // - Putting the index in the low 32-bits is nice, because extracting those doesn't usually
+        //   require an instruction. (And e.g. Registry::get_unchecked ignores the generation.)
+        // - This lets us use the NonZeroU64 representation. (Option<Id> is probably rare, since
+        //   IDs can be null anyway, but it's nice to have.)
+        // - This saves an instruction when checking an ID against a slot state.
+        // - This makes the null ID all 1's, which is also nice.
+        debug_assert_eq!(index as u64 >> 32, 0, "high bits should not be set");
+        debug_assert_eq!(generation >> 31, 0, "the high bit should not be set");
+        Self(
+            unsafe {
+                NonZeroU64::new_unchecked(
+                    ((((generation << 1) + 1) as u64) << 32) | index as u32 as u64,
+                )
+            },
+            PhantomData,
+        )
     }
 
-    fn index(&self) -> u32 {
-        // Note that subtracting 1 here makes data=u64::MAX unrepresentable, rather than data=0.
-        let data = self.0.get() - 1;
-        (data >> 32) as u32
+    fn index(&self) -> usize {
+        self.0.get() as u32 as usize
     }
 
     fn generation(&self) -> u32 {
-        // Note that subtracting 1 here makes data=u64::MAX unrepresentable, rather than data=0.
-        let data = self.0.get() - 1;
-        debug_assert_eq!(data & (1 << 31), 0, "this bit should never be set");
-        data as u32
+        (self.0.get() >> 33) as u32
+    }
+
+    fn matching_state(&self) -> State<Self::GenerationBits> {
+        // Bit 32 is always 1.
+        debug_assert_eq!(1, (self.0.get() >> 32) & 1);
+        // This operation might not require an instruction at all, if the caller can just load the
+        // upper 32 bits directly from memory into a register. That's why matching_state is
+        // designed the way it is.
+        State::new((self.0.get() >> 32) as u32)
+    }
+
+    fn null() -> Self {
+        Self(NonZeroU64::new(u64::MAX).unwrap(), PhantomData)
+    }
+
+    fn is_null(&self) -> bool {
+        self.0.get() == u64::MAX
     }
 }
 
@@ -179,7 +182,7 @@ impl<T> Eq for Id64<T> {}
 // Copy and Eq even when T isn't. See https://github.com/rust-lang/rust/issues/108894.
 #[repr(transparent)]
 pub struct Id32<T, const GENERATION_BITS: usize>(
-    NonZeroU32,
+    u32,
     // https://doc.rust-lang.org/nomicon/phantom-data.html#table-of-phantomdata-patterns
     PhantomData<fn() -> T>,
 );
@@ -194,27 +197,34 @@ where
     type IndexBits = typenum::Diff<typenum::U32, typenum::U<GENERATION_BITS>>;
     type GenerationBits = typenum::U<GENERATION_BITS>;
 
-    unsafe fn new_unchecked(index: u32, generation: u32) -> Self {
-        let data = (index << GENERATION_BITS) | generation;
-        unsafe {
-            Self(
-                // Note that adding 1 here makes data=u32::MAX unrepresentable, rather than data=0.
-                NonZeroU32::new_unchecked(data + 1),
-                PhantomData,
-            )
-        }
+    fn new(index: usize, generation: u32) -> Self {
+        // Unlike Id64 above, where bit 32 is always 1, this type has no extra bits, and it doesn't
+        // get a NonZero representation. This time we put the index in the high bits, because
+        // extracting the high bits is always a single instruction (right shift with immediate).
+        // Extracting the low bits might require two instructions, for example on RISC-V when the
+        // `andi` bitmask is larger than 11 bits.
+        // TODO: Fail for excessively large generations?
+        Self((index << GENERATION_BITS) as u32 | generation, PhantomData)
     }
 
-    fn index(&self) -> u32 {
-        // Note that subtracting 1 here makes data=u32::MAX unrepresentable, rather than data=0.
-        let data = self.0.get() - 1;
-        data >> GENERATION_BITS
+    fn index(&self) -> usize {
+        (self.0 >> GENERATION_BITS) as usize
     }
 
     fn generation(&self) -> u32 {
-        // Note that subtracting 1 here makes data=u32::MAX unrepresentable, rather than data=0.
-        let data = self.0.get() - 1;
-        data & !(u32::MAX << GENERATION_BITS)
+        self.0 & !(u32::MAX << GENERATION_BITS)
+    }
+
+    fn matching_state(&self) -> State<Self::GenerationBits> {
+        State::new((self.generation() << 1) + 1)
+    }
+
+    fn null() -> Self {
+        Self(u32::MAX, PhantomData)
+    }
+
+    fn is_null(&self) -> bool {
+        self.0 == u32::MAX
     }
 }
 
@@ -259,10 +269,10 @@ pub use id8::Id8;
 mod id8 {
     use super::*;
 
-    /// Id8 is only for testing.
+    /// Id8 is only for testing. It's mostly a copy-paste of Id32 with fewer bits.
     #[repr(transparent)]
     pub struct Id8<T, const GENERATION_BITS: usize>(
-        NonZeroU8,
+        u8,
         // https://doc.rust-lang.org/nomicon/phantom-data.html#table-of-phantomdata-patterns
         PhantomData<fn() -> T>,
     );
@@ -277,27 +287,31 @@ mod id8 {
         type IndexBits = typenum::Diff<typenum::U8, typenum::U<GENERATION_BITS>>;
         type GenerationBits = typenum::U<GENERATION_BITS>;
 
-        unsafe fn new_unchecked(index: u32, generation: u32) -> Self {
-            let data = ((index as u8) << GENERATION_BITS) | generation as u8;
-            unsafe {
-                Self(
-                    // Note that adding 1 here makes data=u8::MAX unrepresentable, rather than data=0.
-                    NonZeroU8::new_unchecked(data + 1),
-                    PhantomData,
-                )
-            }
+        fn new(index: usize, generation: u32) -> Self {
+            Self(
+                ((index << GENERATION_BITS) as u32 | generation) as u8,
+                PhantomData,
+            )
         }
 
-        fn index(&self) -> u32 {
-            // Note that subtracting 1 here makes data=u8::MAX unrepresentable, rather than data=0.
-            let data = (self.0.get() - 1) as u32;
-            data >> GENERATION_BITS
+        fn index(&self) -> usize {
+            (self.0 >> GENERATION_BITS) as usize
         }
 
         fn generation(&self) -> u32 {
-            // Note that subtracting 1 here makes data=u8::MAX unrepresentable, rather than data=0.
-            let data = (self.0.get() - 1) as u32;
-            data & !(u32::MAX << GENERATION_BITS)
+            (self.0 & !(u8::MAX << GENERATION_BITS)) as u32
+        }
+
+        fn matching_state(&self) -> State<Self::GenerationBits> {
+            State::new((self.generation() << 1) + 1)
+        }
+
+        fn null() -> Self {
+            Self(u8::MAX, PhantomData)
+        }
+
+        fn is_null(&self) -> bool {
+            self.0 == u8::MAX
         }
     }
 
@@ -325,4 +339,19 @@ mod id8 {
     }
 
     impl<T, const GENERATION_BITS: usize> Eq for Id8<T, GENERATION_BITS> {}
+
+    #[test]
+    fn test_id_basics() {
+        let id64 = Id64::<()>::new(42, 99);
+        assert_eq!(id64.index(), 42);
+        assert_eq!(id64.generation(), 99);
+
+        let id32 = Id32::<(), 10>::new(42, 99);
+        assert_eq!(id32.index(), 42);
+        assert_eq!(id32.generation(), 99);
+
+        let id8 = Id8::<(), 4>::new(7, 15);
+        assert_eq!(id8.index(), 7);
+        assert_eq!(id8.generation(), 15);
+    }
 }

@@ -11,21 +11,6 @@ fn should_panic<T>(f: impl FnOnce() -> T) {
 }
 
 #[test]
-fn test_state_helpers() {
-    for state in 0..8 {
-        if state < 4 {
-            assert!(state_is_occupied::<typenum::U2>(state));
-        } else {
-            assert!(state_is_empty::<typenum::U2>(state));
-        }
-        assert_eq!(state_is_retired::<typenum::U2>(state), state == 0b111);
-    }
-
-    #[cfg(debug_assertions)]
-    should_panic(|| debug_assert_high_state_bits_clear::<typenum::U2>(8));
-}
-
-#[test]
 fn test_insert_and_remove() {
     let mut registry = Registry::new();
     let e1 = registry.insert("foo".to_string());
@@ -120,8 +105,8 @@ where
     Id8<(), GENERATION_BITS>: IdTrait,
 {
     let mut registry = Registry::<(), Id8<(), GENERATION_BITS>>::with_id_type();
-    // One index is unrepresentable, and another is reserved for the null ID.
-    let max_len = (1 << (8 - GENERATION_BITS)) - 2;
+    // One index is reserved for the null ID.
+    let max_len = (1 << (8 - GENERATION_BITS)) - 1;
     assert_eq!(max_len, Id8::<(), GENERATION_BITS>::max_len());
     for _ in 0..max_len {
         _ = registry.insert(());
@@ -173,28 +158,28 @@ fn test_gbits_0() {
     let e0 = registry.insert(());
     let e1 = registry.insert(());
     assert_eq!(registry.len(), 2);
-    assert_eq!(registry.slots.state(0), Some(0));
-    assert_eq!(registry.slots.state(1), Some(0));
+    assert_eq!(registry.slots.state(0).unwrap().0, 1);
+    assert_eq!(registry.slots.state(1).unwrap().0, 1);
     assert_eq!(e0.index(), 0);
     assert_eq!(e0.generation(), 0);
     assert_eq!(e1.index(), 1);
     assert_eq!(e1.generation(), 0);
     registry.remove(e0);
     assert_eq!(registry.len(), 1);
-    assert_eq!(registry.slots.state(0), Some(1));
-    assert_eq!(registry.slots.state(1), Some(0));
+    assert_eq!(registry.slots.state(0).unwrap().0, 0);
+    assert_eq!(registry.slots.state(1).unwrap().0, 1);
     assert_eq!(registry.free_indexes, []);
     assert_eq!(registry.retired_indexes, [0]);
     registry.remove(e1);
     assert_eq!(registry.len(), 0);
-    assert_eq!(registry.slots.state(0), Some(1));
-    assert_eq!(registry.slots.state(1), Some(1));
+    assert_eq!(registry.slots.state(0).unwrap().0, 0);
+    assert_eq!(registry.slots.state(1).unwrap().0, 0);
     assert_eq!(registry.free_indexes, []);
     assert_eq!(registry.retired_indexes, [0, 1]);
     registry.recycle_retired();
     assert_eq!(registry.len(), 0);
-    assert_eq!(registry.slots.state(0), Some(1));
-    assert_eq!(registry.slots.state(1), Some(1));
+    assert_eq!(registry.slots.state(0).unwrap().0, 0);
+    assert_eq!(registry.slots.state(1).unwrap().0, 0);
     assert_eq!(registry.free_indexes, [0, 1]);
     assert_eq!(registry.retired_indexes, []);
 }
@@ -204,21 +189,21 @@ fn test_gbits_1() {
     // With GBITS=1, there are 2 possible generations. Confirm that we get a new slot on the
     // 3rd allocate/free cycle.
     let mut registry = Registry::<(), Id8<(), 1>>::with_id_type();
-    assert_eq!(registry.slots.len, 0);
+    assert_eq!(registry.slots.len(), 0);
 
     let mut id = registry.insert(());
     assert_eq!(id.index(), 0);
     assert_eq!(id.generation(), 0);
     assert_eq!(registry.len(), 1);
-    assert_eq!(registry.slots.len, 1);
-    assert_eq!(registry.slots.state(0), Some(0b00));
+    assert_eq!(registry.slots.len(), 1);
+    assert_eq!(registry.slots.state(0).unwrap().0, 0b01);
     assert_eq!(registry.free_indexes, []);
     assert_eq!(registry.retired_indexes, []);
 
     registry.remove(id);
     assert_eq!(registry.len(), 0);
-    assert_eq!(registry.slots.len, 1);
-    assert_eq!(registry.slots.state(0), Some(0b10));
+    assert_eq!(registry.slots.len(), 1);
+    assert_eq!(registry.slots.state(0).unwrap().0, 0b10);
     assert_eq!(registry.free_indexes, [0]);
     assert_eq!(registry.retired_indexes, []);
 
@@ -226,15 +211,15 @@ fn test_gbits_1() {
     assert_eq!(id.index(), 0);
     assert_eq!(id.generation(), 1);
     assert_eq!(registry.len(), 1);
-    assert_eq!(registry.slots.len, 1);
-    assert_eq!(registry.slots.state(0), Some(0b01));
+    assert_eq!(registry.slots.len(), 1);
+    assert_eq!(registry.slots.state(0).unwrap().0, 0b11);
     assert_eq!(registry.free_indexes, []);
     assert_eq!(registry.retired_indexes, []);
 
     registry.remove(id);
     assert_eq!(registry.len(), 0);
-    assert_eq!(registry.slots.len, 1);
-    assert_eq!(registry.slots.state(0), Some(0b11));
+    assert_eq!(registry.slots.len(), 1);
+    assert_eq!(registry.slots.state(0).unwrap().0, 0b00);
     assert_eq!(registry.free_indexes, []);
     assert_eq!(registry.retired_indexes, [0]);
 
@@ -242,9 +227,9 @@ fn test_gbits_1() {
     assert_eq!(id.index(), 1);
     assert_eq!(id.generation(), 0);
     assert_eq!(registry.len(), 1);
-    assert_eq!(registry.slots.len, 2);
-    assert_eq!(registry.slots.state(0), Some(0b11));
-    assert_eq!(registry.slots.state(1), Some(0b00));
+    assert_eq!(registry.slots.len(), 2);
+    assert_eq!(registry.slots.state(0).unwrap().0, 0b00);
+    assert_eq!(registry.slots.state(1).unwrap().0, 0b01);
     assert_eq!(registry.free_indexes, []);
     assert_eq!(registry.retired_indexes, [0]);
 }
@@ -268,21 +253,20 @@ fn do_cloning_and_dropping<ID: IdTrait>() {
     // Clone the registry.
     let cloned = registry.clone();
 
-    // Assert that slots.len is equal in the original and the clone, and also double check that
-    // any slot words past slots.len are zero in both. We rely on this invariant when
-    // allocating new slots.
-    assert_eq!(registry.slots.len, cloned.slots.len);
-    let first_unused_slot_word =
-        word_count_from_state_count::<ID::GenerationBits>(registry.slots.len) as usize;
-    unsafe {
-        // Note that the state_words_cap of the original might not equal that of the clone,
-        // because it's up to the global allocator whether we get more capacity than we ask
-        // for, and it might not be deterministic.
-        for i in first_unused_slot_word..registry.slots.state_words_cap {
-            assert_eq!(0, *registry.slots.state_words_ptr.as_ptr().add(i));
-        }
-        for i in first_unused_slot_word..cloned.slots.state_words_cap {
-            assert_eq!(0, *cloned.slots.state_words_ptr.as_ptr().add(i));
+    // Assert that slots.len() is equal in the original and the clone, and also double check that
+    // any unused states in the final state word are zero-initialized. We rely on that invariant
+    // when allocating new slots.
+    assert_eq!(registry.slots.len(), cloned.slots.len());
+    assert_eq!(
+        registry.slots.state_words.len(),
+        state::word_count_from_state_count::<ID::GenerationBits>(registry.slots.len()),
+    );
+    for i in 0..state::unused_states_in_last_word::<ID::GenerationBits>(registry.slots.len()) {
+        unsafe {
+            assert_eq!(
+                0,
+                registry.slots.state_unchecked(registry.slots.len() + i).0,
+            );
         }
     }
 
@@ -290,10 +274,7 @@ fn do_cloning_and_dropping<ID: IdTrait>() {
     // Miri errors.
     for &id in &ids {
         if let Some(s) = registry.get(id) {
-            assert_eq!(
-                s.parse::<usize>().unwrap(),
-                cloned[id].parse::<usize>().unwrap()
-            );
+            assert_eq!(s, &cloned[id]);
         } else {
             assert!(cloned.get(id).is_none());
         }
@@ -316,8 +297,8 @@ fn test_empty_clone() {
     let id = registry.insert(());
     _ = registry.remove(id);
     let clone = registry.clone();
-    assert_eq!(registry.slots.len, 1);
-    assert_eq!(clone.slots.len, 1);
+    assert_eq!(registry.slots.len(), 1);
+    assert_eq!(clone.slots.len(), 1);
 }
 
 #[test]

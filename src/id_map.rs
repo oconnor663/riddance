@@ -5,6 +5,7 @@
 //! code.
 
 use super::{IdTrait, Registry};
+use std::hash::{Hash, Hasher};
 use std::mem;
 
 struct IndexOnlyWrapper<ID: IdTrait>(ID);
@@ -17,12 +18,9 @@ impl<ID: IdTrait> PartialEq for IndexOnlyWrapper<ID> {
 
 impl<ID: IdTrait> Eq for IndexOnlyWrapper<ID> {}
 
-impl<ID: IdTrait> std::hash::Hash for IndexOnlyWrapper<ID> {
-    fn hash<H>(&self, state: &mut H)
-    where
-        H: std::hash::Hasher,
-    {
-        <u32 as std::hash::Hash>::hash(&self.0.index(), state)
+impl<ID: IdTrait> Hash for IndexOnlyWrapper<ID> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.index().hash(state);
     }
 }
 
