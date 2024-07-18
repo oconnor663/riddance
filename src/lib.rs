@@ -293,7 +293,7 @@ pub struct Registry<T, ID: IdTrait = Id<T>> {
 impl<T> Registry<T, Id<T>> {
     /// Construct a new, empty `Registry<T>` with the default [`Id`] type.
     ///
-    /// The registry will not allocate until elements are inserted into it.
+    /// The `Registry` will not allocate until elements are inserted into it.
     pub fn new() -> Self {
         Self::with_id_type()
     }
@@ -340,6 +340,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         }
     }
 
+    /// Returns the number of elements in the `Registry`.
     pub fn len(&self) -> usize {
         self.slots.len() - self.free_indexes.len() - self.retired_indexes.len()
     }
@@ -384,6 +385,8 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         );
     }
 
+    /// Returns `true` if the `Registry` contains the given `id`. If [`remove`](Registry::remove)
+    /// has been called on `id`, `contains_id` will return `false`.
     pub fn contains_id(&self, id: ID) -> bool {
         self.debug_best_effort_checks_for_contract_violations(id);
         if let Some(state) = self.slots.state(id.index()) {
@@ -396,8 +399,8 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         }
     }
 
-    // Get a reference to an element. If [`remove`](Registry::remove) has been called on `id`,
-    // `get` will return `None`.
+    /// Get a reference to an element. If [`remove`](Registry::remove) has been called on `id`,
+    /// `get` will return `None`.
     pub fn get(&self, id: ID) -> Option<&T> {
         if self.contains_id(id) {
             Some(unsafe { self.get_unchecked(id) })
@@ -406,8 +409,8 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         }
     }
 
-    // Get a mutable reference to an element. If [`remove`](Registry::remove) has been called on
-    // `id`, `get_mut` will return `None`.
+    /// Get a mutable reference to an element. If [`remove`](Registry::remove) has been called on
+    /// `id`, `get_mut` will return `None`.
     pub fn get_mut(&mut self, id: ID) -> Option<&mut T> {
         if self.contains_id(id) {
             Some(unsafe { self.get_unchecked_mut(id) })
@@ -416,7 +419,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         }
     }
 
-    /// Get a reference to an element without checking the size of the Registry or the generation
+    /// Get a reference to an element without checking the size of the `Registry` or the generation
     /// of the ID.
     ///
     /// This function is safe if and only if `self.contains_id(id)` is `true`.
@@ -424,7 +427,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         self.slots.value_unchecked(id.index()).assume_init_ref()
     }
 
-    /// Get a mutable reference to an element without checking the size of the Registry or the
+    /// Get a mutable reference to an element without checking the size of the `Registry` or the
     /// generation of the ID.
     ///
     /// This function is safe if and only if `self.contains_id(id)` is `true`.
@@ -432,6 +435,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         self.slots.value_unchecked_mut(id.index()).assume_init_mut()
     }
 
+    /// Adds a value to the `Registry` and returns an ID that can be used to access that element.
     #[must_use]
     pub fn insert(&mut self, value: T) -> ID {
         self.allocate_reservations();
@@ -510,8 +514,8 @@ impl<T, ID: IdTrait> Registry<T, ID> {
     ///
     /// Whenever you call a `&mut self` method that might change the size of the `Registry` or its
     /// free list ([`insert`], [`insert_reserved`], [`remove`], or [`recycle_retired`]), the
-    /// Registry will automatically allocate space for any pending reservations. You can optionally
-    /// call [`allocate_reservations`] to do this work in advance.
+    /// `Registry` will automatically allocate space for any pending reservations. You can
+    /// optionally call [`allocate_reservations`] to do this work in advance.
     ///
     /// To reserve many IDs at once, see [`reserve_ids`].
     ///
@@ -568,6 +572,19 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         };
     }
 
+    /// Allocate space for reserved slots.
+    ///
+    /// See [`reserve_id`] and [`reserve_ids`]. This method is called internally by any method that
+    /// might change the size of the `Registry` or its free list ([`insert`], [`insert_reserved`],
+    /// [`remove`], or [`recycle_retired`]), so you don't need to call it explicitly unless you
+    /// want to force the allocation to happen sooner.
+    ///
+    /// [`reserve_id`]: Registry::reserve_id
+    /// [`reserve_ids`]: Registry::reserve_ids
+    /// [`insert`]: Registry::insert
+    /// [`insert_reserved`]: Registry::insert_reserved
+    /// [`remove`]: Registry::remove
+    /// [`recycle_retired`]: Registry::recycle_retired
     pub fn allocate_reservations(&mut self) {
         let cursor: &mut u64 = self.reservation_cursor.get_mut();
         if *cursor == 0 {
