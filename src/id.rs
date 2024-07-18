@@ -8,7 +8,7 @@ use typenum::Unsigned;
 
 use crate::state::State;
 
-pub trait IdTrait: Sized + Copy + Clone + PartialEq + Eq + Hash {
+pub trait IdTrait: Sized + Copy + Clone + PartialEq + Eq + Hash + fmt::Debug {
     type IndexBits: Unsigned;
     type GenerationBits: Unsigned;
 
@@ -116,12 +116,17 @@ impl<T> Clone for Id64<T> {
     }
 }
 
-impl<T> std::fmt::Debug for Id64<T>
+impl<T> fmt::Debug for Id64<T>
 where
     Self: IdTrait,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        self.debug_format(f)
+        write!(
+            f,
+            "Id {{ index: {}, generation {} }}",
+            self.index(),
+            self.generation(),
+        )
     }
 }
 
@@ -236,12 +241,17 @@ impl<T, const GENERATION_BITS: usize> Clone for Id32<T, GENERATION_BITS> {
     }
 }
 
-impl<T, const GENERATION_BITS: usize> std::fmt::Debug for Id32<T, GENERATION_BITS>
+impl<T, const GENERATION_BITS: usize> fmt::Debug for Id32<T, GENERATION_BITS>
 where
     Self: IdTrait,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        self.debug_format(f)
+        write!(
+            f,
+            "Id {{ index: {}, generation {} }}",
+            self.index(),
+            self.generation(),
+        )
     }
 }
 
@@ -320,6 +330,20 @@ mod id8 {
     impl<T, const GENERATION_BITS: usize> Clone for Id8<T, GENERATION_BITS> {
         fn clone(&self) -> Self {
             Self(self.0, PhantomData)
+        }
+    }
+
+    impl<T, const GENERATION_BITS: usize> fmt::Debug for Id8<T, GENERATION_BITS>
+    where
+        Self: IdTrait,
+    {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+            write!(
+                f,
+                "Id {{ index: {}, generation {} }}",
+                self.index(),
+                self.generation(),
+            )
         }
     }
 
