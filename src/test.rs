@@ -367,7 +367,7 @@ fn test_reserve_ids() {
 }
 
 #[test]
-fn test_empty_reservations() {
+fn test_reservation_errors() {
     let mut registry = Registry::<String>::new();
     let id0_old = registry.insert("old".into());
     let id1 = registry.insert("old".into());
@@ -409,7 +409,6 @@ fn test_empty_reservations() {
         assert_eq!(error.into_inner(), "blarg");
     }
     registry.remove(id0);
-    dbg!(id0.generation());
     let error = registry.insert_reserved(id0, "blarg".into()).unwrap_err();
     assert_eq!(error.kind, InsertReservedErrorKind::Dangling);
 
@@ -417,19 +416,22 @@ fn test_empty_reservations() {
     // in release mode.
     #[cfg(not(debug_assertions))]
     {
-        // An ID with a generation that's newer than its slot (and not a reservation for that slot)
-        // can only be produced by retaining a dangling ID across a call to recycle_retired, or by
-        // handcrafting a bad ID. Here we do it by hancrafting.
+        // An ID with a generation that's newer than its slot can only be produced by retaining a
+        // dangling ID across a call to recycle_retired, or by handcrafting a bad ID. Here we do it
+        // by hancrafting.
 
-        // For an empty slot, generation + 1 is a valid reservation. Test +2 here.
-        let too_new_id = Id::new(id0.index(), id0.generation() + 2).unwrap();
+        // Test a too-new generation for an empty slot. Since the low state bit is the "occupied"
+        // bit, reserved IDs are always the same generation as the slot they reserve. However,
+        // removing id0 above incremented the generation of its slot, so we need to add +2 here to
+        // provoke a generation-too-new error.
+        let too_new_id = Id::new(id0.index(), id0.generation() + 2);
         let error = registry
             .insert_reserved(too_new_id, "blarg".into())
             .unwrap_err();
         assert_eq!(error.kind, InsertReservedErrorKind::GenerationTooNew);
 
-        // For an occupied slot, generation + 1 should be impossible.
-        let too_new_id = Id::new(id1.index(), id1.generation() + 1).unwrap();
+        // Test a too-new generation for an occupied slot. In this case +1 is enough.
+        let too_new_id = Id::new(id1.index(), id1.generation() + 1);
         let error = registry
             .insert_reserved(too_new_id, "blarg".into())
             .unwrap_err();
@@ -437,7 +439,7 @@ fn test_empty_reservations() {
 
         // An ID with an out-of-bounds index should never be possible other than by
         // handcrafting it.
-        let out_of_bounds_id = Id::new(id2.index() + 1, 0).unwrap();
+        let out_of_bounds_id = Id::new(id2.index() + 1, 0);
         let error = registry
             .insert_reserved(out_of_bounds_id, "blarg".into())
             .unwrap_err();
