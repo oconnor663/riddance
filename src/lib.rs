@@ -605,6 +605,9 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         // Reuse free slots. We don't need to modify their states at all, just remove them from the
         // free indexes list.
         self.free_indexes.truncate(reused_slots_start);
+
+        // Reset the reservation cursor.
+        *cursor = 0;
     }
 
     /// Insert a value for a reserved ID.

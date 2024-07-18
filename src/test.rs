@@ -327,23 +327,28 @@ fn test_reserve_ids() {
     let id0_old = registry.insert("old".into());
     let id1 = registry.insert("old".into());
     registry.remove(id0_old);
+    assert_eq!(registry.len(), 1);
 
     let mut reservation = registry.reserve_ids(3);
+    assert_eq!(registry.len(), 1);
 
     let id0 = reservation.next().unwrap();
     assert_eq!(id0.index(), 0);
     assert_eq!(id0.generation(), 1);
     assert!(registry.get(id0).is_none());
+    assert_eq!(registry.len(), 1);
 
     let id2 = reservation.next().unwrap();
     assert_eq!(id2.index(), 2);
     assert_eq!(id2.generation(), 0);
     assert!(registry.get(id2).is_none());
+    assert_eq!(registry.len(), 1);
 
     let id3 = reservation.next().unwrap();
     assert_eq!(id3.index(), 3);
     assert_eq!(id3.generation(), 0);
     assert!(registry.get(id3).is_none());
+    assert_eq!(registry.len(), 1);
 
     assert!(reservation.next().is_none());
 
@@ -354,6 +359,7 @@ fn test_reserve_ids() {
     for id in [id0, id2, id3] {
         registry.insert_reserved(id, "new".into()).unwrap();
     }
+    assert_eq!(registry.len(), 4);
     assert_eq!(registry.get(id0).unwrap(), "new");
     assert_eq!(registry.get(id1).unwrap(), "old");
     assert_eq!(registry.get(id2).unwrap(), "new");
