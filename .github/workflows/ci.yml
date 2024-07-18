@@ -1,0 +1,54 @@
+name: tests
+
+on:
+  push:
+    branches:
+      - "*"
+    # not on tags
+  pull_request:
+
+env:
+  RUSTFLAGS: "-D warnings"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  tests:
+    name: ${{ matrix.os }} ${{ matrix.toolchain }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["ubuntu-latest", "macOS-latest", "windows-latest"]
+        toolchain: [
+          "stable",
+          "beta",
+          "nightly",
+          # The current MSRV. This crate doesn't have an official MSRV policy,
+          # but in practice we'll probably do what libc does:
+          # https://github.com/rust-lang/libs-team/issues/72.
+          # This test target is here so that we notice if we accidentally bump
+          # the MSRV, but it's not a promise that we won't bump it.
+          "1.73.0",
+        ]
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ matrix.toolchain }}
+    - run: cargo test
+    - run: cargo test --release
+    - run: cargo test --no-default-features
+    - run: cargo test --no-default-features --release
+    - run: cargo test --all-features
+    - run: cargo test --all-features --release
+
+  miri:
+    name: tests under Miri
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: miri
+    - run: cargo miri test --all-features
