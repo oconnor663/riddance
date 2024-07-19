@@ -43,8 +43,10 @@
 
 use std::cmp;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::mem::{self, MaybeUninit};
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use typenum::Unsigned;
 
@@ -279,7 +281,104 @@ where
 ///
 /// [`recycle_retired`]: Registry::recycle_retired
 /// [`Id32`]: id::Id32
-pub type Id<T> = id::Id64<T>;
+// Note that we can't use #[derive(...)] for common traits here, because for example Id should be
+// Copy and Eq even when T isn't. See https://github.com/rust-lang/rust/issues/108894.
+#[repr(transparent)]
+pub struct Id<T>(
+    NonZeroU64,
+    // https://doc.rust-lang.org/nomicon/phantom-data.html#table-of-phantomdata-patterns
+    PhantomData<fn() -> T>,
+);
+
+impl<T> IdTrait for Id<T> {
+    type IndexBits = typenum::U32;
+    type GenerationBits = typenum::U31;
+
+    fn new(index: usize, generation: u32) -> Self {
+        // We store the entire state word in the top 32 bits of the ID. Since occupied states are
+        // odd, this means that bit 32 is always 1.
+        // - Putting the index in the low 32-bits is nice, because extracting those doesn't usually
+        //   require an instruction. (And e.g. Registry::get_unchecked ignores the generation.)
+        // - This lets us use the NonZeroU64 representation. (Option<Id> is probably rare, since
+        //   IDs can be null anyway, but it's nice to have.)
+        // - This saves an instruction when checking an ID against a slot state.
+        // - This makes the null ID all 1's, which is also nice.
+        debug_assert_eq!(index as u64 >> 32, 0, "high bits should not be set");
+        debug_assert_eq!(generation >> 31, 0, "the high bit should not be set");
+        Self(
+            unsafe {
+                NonZeroU64::new_unchecked(
+                    ((((generation << 1) + 1) as u64) << 32) | index as u32 as u64,
+                )
+            },
+            PhantomData,
+        )
+    }
+
+    fn index(&self) -> usize {
+        self.0.get() as u32 as usize
+    }
+
+    fn generation(&self) -> u32 {
+        (self.0.get() >> 33) as u32
+    }
+
+    fn matching_state(&self) -> State<Self::GenerationBits> {
+        // Bit 32 is always 1.
+        debug_assert_eq!(1, (self.0.get() >> 32) & 1);
+        // This operation might not require an instruction at all, if the caller can just load the
+        // upper 32 bits directly from memory into a register. That's why matching_state is
+        // designed the way it is.
+        State::new((self.0.get() >> 32) as u32)
+    }
+
+    fn null() -> Self {
+        Self(NonZeroU64::new(u64::MAX).unwrap(), PhantomData)
+    }
+
+    fn is_null(&self) -> bool {
+        self.0.get() == u64::MAX
+    }
+}
+
+impl<T> Copy for Id<T> {}
+
+impl<T> Clone for Id<T> {
+    fn clone(&self) -> Self {
+        Self(self.0, PhantomData)
+    }
+}
+
+impl<T> fmt::Debug for Id<T>
+where
+    Self: IdTrait,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(
+            f,
+            "Id {{ index: {}, generation {} }}",
+            self.index(),
+            self.generation(),
+        )
+    }
+}
+
+impl<T> Hash for Id<T> {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: Hasher,
+    {
+        self.0.hash(state);
+    }
+}
+
+impl<T> PartialEq for Id<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<T> Eq for Id<T> {}
 
 /// A container that issues IDs and maps them to stored values, also called a "slot map" or an
 /// "arena".
@@ -391,7 +490,7 @@ impl<T, ID: IdTrait> Registry<T, ID> {
         self.debug_best_effort_checks_for_contract_violations(id);
         if let Some(state) = self.slots.state(id.index()) {
             // This comparison can only succeed if the generation matches and the occupied bit is
-            // one. Note that Id64 is laid out to save an instruction here (the occupied bit is in
+            // one. Note that Id is laid out to save an instruction here (the occupied bit is in
             // the ID).
             state == id.matching_state()
         } else {

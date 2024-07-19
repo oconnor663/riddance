@@ -3,7 +3,6 @@
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
-use std::num::NonZeroU64;
 use typenum::Unsigned;
 
 use crate::state::State;
@@ -46,106 +45,6 @@ pub trait IdTrait: Sized + Copy + Clone + PartialEq + Eq + Hash + fmt::Debug {
         )
     }
 }
-
-/// This is what the [`Id`](crate::Id) type alias at the crate root points to.
-// Note that we can't use #[derive(...)] for common traits here, because for example Id should be
-// Copy and Eq even when T isn't. See https://github.com/rust-lang/rust/issues/108894.
-#[repr(transparent)]
-pub struct Id64<T>(
-    NonZeroU64,
-    // https://doc.rust-lang.org/nomicon/phantom-data.html#table-of-phantomdata-patterns
-    PhantomData<fn() -> T>,
-);
-
-impl<T> IdTrait for Id64<T> {
-    type IndexBits = typenum::U32;
-    type GenerationBits = typenum::U31;
-
-    fn new(index: usize, generation: u32) -> Self {
-        // We store the entire state word in the top 32 bits of the ID. Since occupied states are
-        // odd, this means that bit 32 is always 1.
-        // - Putting the index in the low 32-bits is nice, because extracting those doesn't usually
-        //   require an instruction. (And e.g. Registry::get_unchecked ignores the generation.)
-        // - This lets us use the NonZeroU64 representation. (Option<Id> is probably rare, since
-        //   IDs can be null anyway, but it's nice to have.)
-        // - This saves an instruction when checking an ID against a slot state.
-        // - This makes the null ID all 1's, which is also nice.
-        debug_assert_eq!(index as u64 >> 32, 0, "high bits should not be set");
-        debug_assert_eq!(generation >> 31, 0, "the high bit should not be set");
-        Self(
-            unsafe {
-                NonZeroU64::new_unchecked(
-                    ((((generation << 1) + 1) as u64) << 32) | index as u32 as u64,
-                )
-            },
-            PhantomData,
-        )
-    }
-
-    fn index(&self) -> usize {
-        self.0.get() as u32 as usize
-    }
-
-    fn generation(&self) -> u32 {
-        (self.0.get() >> 33) as u32
-    }
-
-    fn matching_state(&self) -> State<Self::GenerationBits> {
-        // Bit 32 is always 1.
-        debug_assert_eq!(1, (self.0.get() >> 32) & 1);
-        // This operation might not require an instruction at all, if the caller can just load the
-        // upper 32 bits directly from memory into a register. That's why matching_state is
-        // designed the way it is.
-        State::new((self.0.get() >> 32) as u32)
-    }
-
-    fn null() -> Self {
-        Self(NonZeroU64::new(u64::MAX).unwrap(), PhantomData)
-    }
-
-    fn is_null(&self) -> bool {
-        self.0.get() == u64::MAX
-    }
-}
-
-impl<T> Copy for Id64<T> {}
-
-impl<T> Clone for Id64<T> {
-    fn clone(&self) -> Self {
-        Self(self.0, PhantomData)
-    }
-}
-
-impl<T> fmt::Debug for Id64<T>
-where
-    Self: IdTrait,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(
-            f,
-            "Id {{ index: {}, generation {} }}",
-            self.index(),
-            self.generation(),
-        )
-    }
-}
-
-impl<T> Hash for Id64<T> {
-    fn hash<H>(&self, state: &mut H)
-    where
-        H: Hasher,
-    {
-        self.0.hash(state);
-    }
-}
-
-impl<T> PartialEq for Id64<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl<T> Eq for Id64<T> {}
 
 /// A smaller ID type for caller who want to save space.
 ///
@@ -203,11 +102,11 @@ where
     type GenerationBits = typenum::U<GENERATION_BITS>;
 
     fn new(index: usize, generation: u32) -> Self {
-        // Unlike Id64 above, where bit 32 is always 1, this type has no extra bits, and it doesn't
-        // get a NonZero representation. This time we put the index in the high bits, because
-        // extracting the high bits is always a single instruction (right shift with immediate).
-        // Extracting the low bits might require two instructions, for example on RISC-V when the
-        // `andi` bitmask is larger than 11 bits.
+        // Unlike the default 64-bit `Id`, where bit 32 is always 1, this type has no extra bits,
+        // and it doesn't get a NonZero representation. This time we put the index in the high
+        // bits, because extracting the high bits is always a single instruction (right shift with
+        // immediate). Extracting the low bits might require two instructions, for example on
+        // RISC-V when the `andi` bitmask is larger than 11 bits.
         // TODO: Fail for excessively large generations?
         Self((index << GENERATION_BITS) as u32 | generation, PhantomData)
     }
@@ -366,7 +265,7 @@ mod id8 {
 
     #[test]
     fn test_id_basics() {
-        let id64 = Id64::<()>::new(42, 99);
+        let id64 = crate::Id::<()>::new(42, 99);
         assert_eq!(id64.index(), 42);
         assert_eq!(id64.generation(), 99);
 

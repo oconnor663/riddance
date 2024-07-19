@@ -1,6 +1,6 @@
 use super::*;
 use crate::error::InsertReservedErrorKind;
-use crate::id::{Id32, Id64, Id8};
+use crate::id::{Id32, Id8};
 use std::panic;
 
 #[track_caller]
@@ -286,7 +286,7 @@ fn test_cloning_and_dropping() {
     // We're going to do 100 insertions but also 50 removals, so we need at least 6 index bits.
     do_cloning_and_dropping::<Id8<String, 2>>();
     do_cloning_and_dropping::<Id32<String, 10>>();
-    do_cloning_and_dropping::<Id64<String>>();
+    do_cloning_and_dropping::<Id<String>>();
 }
 
 #[test]
@@ -305,7 +305,7 @@ fn test_empty_clone() {
 fn test_id_sizes() {
     assert_eq!(1, mem::size_of::<Id8<(), 4>>());
     assert_eq!(4, mem::size_of::<Id32<(), 10>>());
-    assert_eq!(8, mem::size_of::<Id64<()>>());
+    assert_eq!(8, mem::size_of::<Id<()>>());
 }
 
 #[test]
