@@ -29,7 +29,7 @@ impl<ID: IdTrait> Hash for IndexOnlyWrapper<ID> {
 /// # Example
 ///
 /// ```
-/// use riddance::{Registry, id::IdTrait, id_map::IdMap};
+/// use riddance::{Registry, id::IdTrait, map::IdMap};
 ///
 /// let mut registry = Registry::new();
 /// let id = registry.insert("foo");

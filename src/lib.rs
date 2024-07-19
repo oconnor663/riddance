@@ -50,8 +50,8 @@ use typenum::Unsigned;
 
 pub mod error;
 pub mod id;
-pub mod id_map;
 pub mod iter;
+pub mod map;
 pub mod state;
 
 #[cfg(test)]
