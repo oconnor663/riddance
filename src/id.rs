@@ -15,7 +15,9 @@ pub trait IdTrait: Sized + Copy + Clone + PartialEq + Eq + Hash + fmt::Debug {
     fn index(&self) -> usize;
     fn generation(&self) -> u32;
     fn matching_state(&self) -> State<Self::GenerationBits>;
+    /// Produce an ID that's guaranteed never to be present in any `Registry`.
     fn null() -> Self;
+    /// Returns `true` only for the ID returned by `null` above.
     fn is_null(&self) -> bool;
 
     fn max_len() -> usize {
@@ -51,11 +53,12 @@ pub trait IdTrait: Sized + Copy + Clone + PartialEq + Eq + Hash + fmt::Debug {
 /// Using this ID type requires picking a value for the `GENERATION_BITS` const parameter, which
 /// must be between 0 and 31 inclusive. The number of index bits is 32 minus `GENERATION_BITS`.
 /// Setting `GENERATION_BITS` to 0 means that any removed IDs are immediately retired (see
-/// [`recycle_retired`](crate::Registry::recycle_retired)). Setting it to 31 means that the only
-/// possible ID is the [`null`](IdTrait::null) ID, and any call to
-/// [`insert`](crate::Registry::insert) will panic. Most callers will probably want a value
-/// somewhere in the middle, like 10 or 12. But in general you're using this ID type because you
-/// know exactly what your application needs, so who am I to tell you what to do? :)
+/// [`recycle_retired`](crate::Registry::recycle_retired)). Setting it to 31 means there are only
+/// two possible slot indexes, and since one slot reserved for the [`null`](IdTrait::null) ID,
+/// trying to [`insert`](crate::Registry::insert) a second element will panic. Most callers will
+/// probably want a value somewhere in the middle, like 10 or 12. But in general you're using this
+/// ID type because you know exactly what your application needs, so who am I to tell you what to
+/// do? :)
 ///
 /// # Example
 ///

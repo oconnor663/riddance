@@ -234,6 +234,84 @@ fn test_gbits_1() {
     assert_eq!(registry.retired_indexes, [0]);
 }
 
+#[test]
+fn test_gbits_max() {
+    // With GBITS=7 (the max value for Id8), there is only one valid slot index (0), and index 1 is
+    // reserved for the null ID.
+    let mut registry = Registry::<(), Id8<(), 7>>::with_id_type();
+    assert_eq!(registry.slots.len(), 0);
+
+    // One insertion succeeds.
+    let id1 = registry.insert(());
+    assert!(registry.contains_id(id1));
+    assert_eq!(id1.index(), 0);
+    assert_eq!(id1.generation(), 0);
+
+    // A second insertion panics.
+    should_panic(|| _ = registry.insert(()));
+
+    // We can instantiate the null ID and check that it's not present without provoking any panics.
+    assert!(!registry.contains_id(Id8::null()));
+
+    // We can reuse the first slot if we remove id1.
+    registry.remove(id1);
+    let id2 = registry.insert(());
+    assert!(!registry.contains_id(id1));
+    assert!(registry.contains_id(id2));
+    assert_eq!(id2.index(), 0);
+    assert_eq!(id2.generation(), 1);
+
+    // Repeating that 126 more times produces an ID with the maximal generation.
+    let mut id = id2;
+    for _ in 0..126 {
+        registry.remove(id);
+        id = registry.insert(());
+    }
+    assert_eq!(id.index(), 0);
+    assert_eq!(id.generation(), 127);
+
+    // One more removal retires the slot.
+    assert_eq!(registry.retired_indexes, []);
+    registry.remove(id);
+    assert_eq!(registry.retired_indexes, [0]);
+
+    // Even though len is now 0, insertions panic until we retire the slot.
+    assert_eq!(registry.len(), 0);
+    should_panic(|| _ = registry.insert(()));
+    registry.recycle_retired();
+    assert_eq!(registry.retired_indexes, []);
+    let recycled_id = registry.insert(());
+    assert_eq!(recycled_id.index(), 0);
+    assert_eq!(recycled_id.generation(), 0);
+
+    // ---------------------------------------
+    // We don't want to cycle through 4 billion IDs, but repeat the cheap subset of these checks
+    // for Id32 also.
+    // ---------------------------------------
+    let mut registry = Registry::<(), Id32<(), 31>>::with_id_type();
+    assert_eq!(registry.slots.len(), 0);
+
+    // One insertion succeeds.
+    let id1 = registry.insert(());
+    assert!(registry.contains_id(id1));
+    assert_eq!(id1.index(), 0);
+    assert_eq!(id1.generation(), 0);
+
+    // A second insertion panics.
+    should_panic(|| _ = registry.insert(()));
+
+    // We can instantiate the null ID and check that it's not present without provoking any panics.
+    assert!(!registry.contains_id(Id32::null()));
+
+    // We can reuse the first slot if we remove id1.
+    registry.remove(id1);
+    let id2 = registry.insert(());
+    assert!(!registry.contains_id(id1));
+    assert!(registry.contains_id(id2));
+    assert_eq!(id2.index(), 0);
+    assert_eq!(id2.generation(), 1);
+}
+
 // This test does a few asserts, but its real purpose is to run under Miri and make sure we
 // don't leak memory or touch any freed memory.
 fn do_cloning_and_dropping<ID: IdTrait>() {
