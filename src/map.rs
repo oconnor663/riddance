@@ -352,6 +352,12 @@ mod test {
         assert_eq!(map.reverse_map.get(&1), Some(&id1));
         assert_eq!(map.reverse_map.get(&2), Some(&id2));
 
+        // Test slicing methods.
+        assert_eq!(map.as_slice(), &["foo", "bar", "baz"]);
+        map.as_mut_slice()[2] = "BAZ";
+        assert_eq!(map.as_slice(), &["foo", "bar", "BAZ"]);
+        assert_eq!(map[id2], "BAZ");
+
         // overwrite "foo" with "FOO"
         assert_eq!(map.insert(id0, "FOO"), Some("foo"));
         assert_eq!(map.get(id0), Some(&"FOO"));
@@ -359,16 +365,19 @@ mod test {
         // `get_mut` (but not `get`) with id1_new drops the id1 key/value pair
         assert_eq!(map.get(id1_new), None);
         assert_eq!(map.get(id1), Some(&"bar"));
+        assert_eq!(map.as_slice(), &["FOO", "bar", "BAZ"]);
         assert_eq!(map.get_mut(id1_new), None);
         assert_eq!(map.get(id1), None);
+        assert_eq!(map.as_slice(), &["FOO", "BAZ"]);
         assert_eq!(map.reverse_map.get(&0), Some(&id0));
         assert_eq!(map.reverse_map.get(&1), Some(&id2));
         assert_eq!(map.reverse_map.get(&2), None);
 
         // `vacuum` drops id2
-        assert_eq!(map.get(id2), Some(&"baz"));
+        assert_eq!(map.get(id2), Some(&"BAZ"));
         map.vacuum(&reg);
         assert_eq!(map.get(id2), None);
+        assert_eq!(map.as_slice(), &["FOO"]);
         assert_eq!(map.reverse_map.get(&0), Some(&id0));
         assert_eq!(map.reverse_map.get(&1), None);
         assert_eq!(map.reverse_map.get(&2), None);
