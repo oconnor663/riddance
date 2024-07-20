@@ -1,19 +1,30 @@
-//! Riddance provides the [`Registry`] container, which stores objects and issues unique IDs for
-//! them, also known as a "slot map" or an "arena". Features include:
+//! Riddance provides a [`Registry`] container, which stores objects and issues unique IDs for
+//! them, also known as a "slot map" or an "arena".
 //!
-//! - New IDs can be "reserved" atomically, without locking the [`Registry`]. See [`reserve_id`]
-//!   and [`reserve_ids`].
-//! - When the generation of a slot reaches its maximum, the slot is "retired" instead of allowing
-//!   the generation to roll over to zero. This prevents logic errors from colliding IDs.
-//! - The default [`Id`] type is 64 bits, but callers that need smallers IDs can use [`Id32`],
-//!   which has a configurable number of generation bits.
-//! - The [`recycle_retired`] method makes it possible to reuse previously retired slots, though it
-//!   can introduce logic errors if you violate its contract. It's mainly intended for callers who
-//!   use [`Id32`].
-//! - By default ID types incorporate the `T` type parameter of the `Registry` that created them,
-//!   to avoid confusing IDs from different registries.
+//! # Example: the graph problem
 //!
-//! # Example
+//! In most programming languages it's easy to build a group of objects that reference each other,
+//! but [the easy way doesn't work in Rust](https://jacko.io/object_soup.html):
+//!
+//! ```compile_fail
+//! # fn main() {
+//! struct Person {
+//!     name: String,
+//!     friends: Vec<Person>,
+//! }
+//!
+//! let mut alice = Person { name: "Alice".into(), friends: vec![] };
+//! let mut bob = Person { name: "Bob".into(), friends: vec![] };
+//! alice.friends.push(bob);
+//! bob.friends.push(alice); // error: borrow of moved value: `bob`
+//! # }
+//! ```
+//!
+//! [The simplest solution is to use `Vec` indexes instead of
+//! references](https://jacko.io/object_soup.html), but then you can't delete elements, and it's
+//! also easy to make mistakes when different types all have `usize` IDs. [`Registry`] uses
+//! "generational indexes" under the hood to support deletion, and it creates element-type-specific
+//! IDs by default:
 //!
 //! ```
 //! # fn main() {
@@ -30,16 +41,63 @@
 //! people[alice_id].friends.push(bob_id);
 //! people[bob_id].friends.push(alice_id);
 //!
-//! people.remove(bob_id);
-//! assert!(people.get(alice_id).is_some());
-//! assert!(people.get(bob_id).is_none());
+//! // Deletion works and frees up space.
+//! people.remove(alice_id);
+//! assert!(people.get(alice_id).is_none());
+//! assert!(people.get(bob_id).is_some());
 //! # }
 //! ```
 //!
+//! # Basic features
+//!
+//! - [`Registry::insert`] returns a unique, copyable [`Id<T>`] that you can use to reference the
+//!   inserted element, with [`get`](Registry::get), [`get_mut`](Registry::get_mut), or square
+//!   bracket indexing. The performance of these lookups is similar to `Vec` indexing, faster than
+//!   `HashMap` for example.
+//! - [`Registry::remove`] returns the original element and frees up capacity for future elements.
+//!   Each element slot has a "generation" (31 bits by default), and each removal increments the
+//!   generation of the removed slot, so new IDs can reuse free slots without being confused for
+//!   old IDs. When the generation of a given slot reaches its maximum (after 2 billion removals),
+//!   that slot is "retired". This guarantees that new IDs are always unique.
+//! - Like a `HashMap`, you can iterate [over values](Registry::values), [over IDs](Registry::ids),
+//!   or [both](Registry::iter).
+//!
+//! # Advanced features
+//!
+//! - New IDs can be "reserved" atomically, without requiring mutable access to the [`Registry`].
+//!   See [`reserve_id`] and [`reserve_ids`]. This allows multiple threads of an application to
+//!   build objects in parallel and finish inserting them later with [`insert_reserved`].
+//! - The default [`Id`] type is 64 bits, but callers that want smallers IDs can use [`Id32`],
+//!   which has a configurable number of generation bits. This leads to a tradeoff between maximum
+//!   number of elements the [`Registry`] can hold and the rate at which slots get retired.
+//! - [`Registry::recycle_retired`] adds retired slots back to the free list. When you recycle, you
+//!   must promise not to call any [`Registry`] methods with removed ("dangling") IDs from before
+//!   the recycle, or else you'll cause logic errors. This is hard to use correctly, and it's only
+//!   intended for callers who use [`Id32`] with an aggressively small number of generation bits.
+//!   Most callers don't need it.
+//!
+//! # Comparison with other slot map / arena crates
+//!
+//! The most well-established crate is [`slotmap`], which provides the [`SlotMap`] container. The
+//! main differences between [`Registry`] and [`SlotMap`] are:
+//!
+//! - This crate is new and still incomplete. [`SlotMap`] is much better tested and more
+//!   feature-complete.
+//! - The [`slotmap`] crate provides several different implementations with different performance
+//!   tradeoffs, like efficient iteration or sparse storage. This crate only provides [`Registry`].
+//! - [`SlotMap`] doesn't retire slots. In rare circumstances, it's possible for IDs from two
+//!   different insertions to collide.
+//! - [`SlotMap`] doesn't support atomically reserving IDs.
+//!
+//! [`get`]: Registry::get
+//! [`get_mut`]: Registry::get_mut
+//! [`remove`]: Registry::remove
+//! [`Id32`]: id::Id32
 //! [`reserve_id`]: Registry::reserve_id
 //! [`reserve_ids`]: Registry::reserve_ids
-//! [`Id32`]: id::Id32
-//! [`recycle_retired`]: Registry::recycle_retired
+//! [`insert_reserved`]: Registry::insert_reserved
+//! [`slotmap`]: https://crates.io/crates/slotmap
+//! [`SlotMap`]: https://docs.rs/slotmap/latest/slotmap/struct.SlotMap.html
 
 use std::cmp;
 use std::fmt;
