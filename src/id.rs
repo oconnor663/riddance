@@ -7,7 +7,7 @@ use typenum::Unsigned;
 
 use crate::state::State;
 
-pub trait IdTrait: Sized + Copy + Clone + PartialEq + Eq + Hash + fmt::Debug {
+pub unsafe trait IdTrait: Sized + Copy + Clone + PartialEq + Eq + Hash + fmt::Debug {
     type IndexBits: Unsigned;
     type GenerationBits: Unsigned;
 
@@ -94,7 +94,7 @@ pub struct Id32<T, const GENERATION_BITS: usize>(
     PhantomData<fn() -> T>,
 );
 
-impl<T, const GENERATION_BITS: usize> IdTrait for Id32<T, GENERATION_BITS>
+unsafe impl<T, const GENERATION_BITS: usize> IdTrait for Id32<T, GENERATION_BITS>
 where
     typenum::Const<GENERATION_BITS>: typenum::ToUInt,
     typenum::U<GENERATION_BITS>: Unsigned,
@@ -189,7 +189,7 @@ mod id8 {
         PhantomData<fn() -> T>,
     );
 
-    impl<T, const GENERATION_BITS: usize> IdTrait for Id8<T, GENERATION_BITS>
+    unsafe impl<T, const GENERATION_BITS: usize> IdTrait for Id8<T, GENERATION_BITS>
     where
         typenum::Const<GENERATION_BITS>: typenum::ToUInt,
         typenum::U<GENERATION_BITS>: Unsigned,

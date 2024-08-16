@@ -348,7 +348,7 @@ pub struct Id<T>(
     PhantomData<fn() -> T>,
 );
 
-impl<T> IdTrait for Id<T> {
+unsafe impl<T> IdTrait for Id<T> {
     type IndexBits = typenum::U32;
     type GenerationBits = typenum::U31;
 
@@ -383,6 +383,8 @@ impl<T> IdTrait for Id<T> {
 
     fn matching_state(&self) -> State<Self::GenerationBits> {
         // Bit 32 is always 1.
+        // XXX: This sort of thing is why this trait is currently unsafe. It would be unsound to
+        // violate this assertion.
         debug_assert_eq!(1, (self.0.get() >> 32) & 1);
         // This operation might not require an instruction at all, if the caller can just load the
         // upper 32 bits directly from memory into a register. That's why matching_state is
