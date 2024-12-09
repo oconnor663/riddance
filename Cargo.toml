@@ -1,6 +1,6 @@
 [package]
 name = "riddance"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Jack O'Connor <oconnor663@gmail.com>"]
 edition = "2021"
 description = "retiring, recyclable, reservable IDs"
